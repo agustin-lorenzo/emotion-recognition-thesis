@@ -15,9 +15,16 @@ import csv
 import os
 import copy
 
+# initialize constants
+SNR = 5 # signal-to-noise ratio
+NUM_EPOCHS = 50 # number of epochs for training
+REP_FACTOR = 20 # how many augmented samples are created out of one original sample
+                # 5 -> 2000, 10 -> 4000
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-csv_file = 'subject_dependent_model_metrics-second_run.csv'
+csv_file = f'continued3_metrics_{NUM_EPOCHS}epochs_{REP_FACTOR}augmented.csv'
 header = ["subject", "valence_accuracy", "arousal_accuracy", "overall_accuracy"]
 
 if not os.path.exists(csv_file):
@@ -25,10 +32,6 @@ if not os.path.exists(csv_file):
         writer = csv.writer(file)
         writer.writerow(header)
 
-# initialize constants
-SNR = 5 # signal-to-noise ratio
-REP_FACTOR = 20 # how many augmented samples are created out of one original sample
-NUM_EPOCHS = 20 # number of epochs for training
 
 # dataset object for CWT data
 class CWTDataset(Dataset):
@@ -72,7 +75,7 @@ def add_gaussian_noise(signal, snr_db=5):
     return noisy_signal
 
 # load dataset
-for subject in range(32):
+for subject in range(3, 32):
     file_path = f"data_preprocessed_python/s{subject + 1:02}.dat"
     x = pickle.load(open(file_path, 'rb'), encoding='latin1')
     data = x['data']
