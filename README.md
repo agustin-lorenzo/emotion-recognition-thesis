@@ -29,12 +29,13 @@ This thesis demonstrates an approach to emotion recognition using vision transfo
 ## Methods
 ### Data and preprocessing
 The dataset used is a preprocessed version of the DEAP dataset. This dataset provides EEG recordings of participants' responses to emotional stimuli. These stimuli were also rated on continuous scales of valence and arousal (1 - 9). Using these two values, the data can be split into 4 distinct classes by using a threshold of 4.5:
-* LVLA: low valence, low arousal
-* LVHA: low valence, high arousal
-* HVLA: high valence, low arousal
-* HVHA: high valence, high arousal
+* **LVLA**: low valence, low arousal
+* **LVHA**: low valence, high arousal
+* **HVLA**: high valence, low arousal
+* **HVHA**: high valence, high arousal
+<img src="figures/circumplex.png" alt="circumplex" width="500">
 
-CWT data was obtained using the fCWT library, which was then reoriented to create "frames" that display CWT values for each channel at one point in time.
+CWT features were extracted using the fCWT library, which was then reoriented to create "frames" that display CWT values for each channel at one point in time.
 
 <img src="figures/example_frame.png" alt="frame" width="500"/>
 
