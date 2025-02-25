@@ -1,4 +1,4 @@
-# Emotion Recognition Thesis
+# Emotion Recognition Master's Thesis
 A master's thesis on recognizing emotions from EEG data with **vision transformers** and **continuous wavelet transform (CWT)**
 
 <img src="figures/cwt.gif" alt="cwt" width="500"/>
@@ -90,4 +90,4 @@ I would like to thank UGA's Institute for Artificial Intelligence for the suppor
 
 [DEAP](https://www.eecs.qmul.ac.uk/mmv/datasets/deap/download.html)
 
-<img src="figures/uga_iai.png" alt="iai" width="500">
+<img src="figures/uga_iai.png" alt="iai" width="300">
