@@ -1,5 +1,5 @@
 # Emotion Recognition Master's Thesis
-A master's thesis on recognizing emotions from EEG data with **vision transformers** and **continuous wavelet transform (CWT)**
+Recognizing Emotions from EEG data with **vision transformers** and **continuous wavelet transform (CWT)**
 
 <img src="figures/cwt.gif" alt="cwt" width="500"/>
 
