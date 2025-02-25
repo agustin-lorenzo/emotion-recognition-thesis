@@ -89,3 +89,5 @@ I would like to thank UGA's Institute for Artificial Intelligence for the suppor
 [vit-pytorch](https://github.com/lucidrains/vit-pytorch#3d-vit)
 
 [DEAP](https://www.eecs.qmul.ac.uk/mmv/datasets/deap/download.html)
+
+<img src="figures/uga_iai.png" alt="iai" width="500">
