@@ -13,7 +13,7 @@ As the capability of machine learning models have improved in recent years, the 
 Approaches that utilize transformers vary in terms of model architecture and features extracted from EEG data. For example:
 
 Model | Features | Architecture
---- | --- | ---
+ --- | --- | ---
 SAG-CET | spatiotemporal | TF + GCNN
 STS-TF | spatiotemporal | TF
 ERTNet | spatiotemporal | TF + CNN
@@ -65,10 +65,10 @@ vit = ViT( # vision transformer parameters follow suggestions from Awan et al. 2
 A unique model was created for each of the 32 subjects present in the DEAP dataset. Each model was trained for 50 epochs on an 80% split of the data containing both original and augmented samples. This split was also stratified by class of emotion. Accuracy metrics were recorded for valence and arousal individually, along with overall accuracy. 
 
 ## Results (so far) 
-Subject-dependent models average accuracy (95% CI):
-Valence | Arousal | Overall
---- | --- | ---
-(98.57, 99.28) | (98.61, 99.38) | (97.87, 98.93)
+Metric | Valence | Arousal | Overall
+--- | --- | --- | ---
+*subject-dependent models average accuracies (95% CI)* | (98.57, 99.28) | (98.61, 99.38) | (97.87, 98.93)
+*cross-subject model accuracies* | TBD | TBD | TBD
 
 ## Plans
 This is still a work in progress. There are a number of things that I am still currently working on. A (non-comprehensive) to-do list is below:
