@@ -28,21 +28,21 @@ This thesis demonstrates an approach to emotion recognition using vision transfo
 
 ## Methods
 ### Data and preprocessing
-The dataset used is a preprocessed version of the DEAP dataset. This dataset provides EEG recordings of participants' responses to emotional stimuli. These stimuli were also rated on continuous scales of valence and arousal (1 - 9). Using these two values, the data can be split into 4 distinct classes by using a threshold of 4.5:
+The dataset used is a preprocessed version of the [DEAP](https://www.eecs.qmul.ac.uk/mmv/datasets/deap/download.html) dataset. This dataset provides EEG recordings of participants' responses to emotional stimuli. These stimuli were also rated on continuous scales of valence and arousal (1 - 9). Using these two values, the data can be split into 4 distinct classes by using a threshold of 4.5:
 * **LVLA**: low valence, low arousal
 * **LVHA**: low valence, high arousal
 * **HVLA**: high valence, low arousal
 * **HVHA**: high valence, high arousal
 <img src="figures/circumplex.png" alt="circumplex" width="500">
 
-CWT features were extracted using the fCWT library, which was then reoriented to create "frames" that display CWT values for each channel at one point in time.
+CWT features were extracted using the [fCWT](https://github.com/fastlib/fCWT) library. These features were then reoriented to create "frames" that display CWT values for each channel at one point in time.
 
 <img src="figures/example_frame.png" alt="frame" width="500"/>
 
 These frames are then stacked together to create "video" inputs for a 3D vision transformer model (an example of which can be seen at the top of the page). These videos were also augmented using Gaussian noise to increase the number of samples used to train the model. 
 
 ### Model and training
-The model is an implementation of a 3D vision transformer obtained from the vit-pytorch library:
+The model is an implementation of a 3D vision transformer obtained from the [vit-pytorch](https://github.com/lucidrains/vit-pytorch#3d-vit) library:
 ```python
 from vit_pytorch.vit_3d import ViT
 
@@ -69,3 +69,23 @@ Subject-dependent models average accuracy (95% CI):
 Valence | Arousal | Overall
 --- | --- | ---
 (98.57, 99.28) | (98.61, 99.38) | (97.87, 98.93)
+
+## Plans
+This is still a work in progress. There are a number of things that I am still currently working on. A (non-comprehensive) to-do list is below:
+- [ ] Train a cross-subject model (model trained on data from all participants)
+- [ ] Confusion matrix for cross subject model
+- [ ] Other classification metrics for all models (precision, recall, f1, etc.)
+- [ ] Finetune cross-subject model on private dataset
+
+## Other info
+This thesis will be submitted to the graduate faculty of The University of Georgia in partial fulfillment of the requirements for the degree Master of Science in Artificial Intelligence.
+
+### Acknowledgments
+I would like to thank UGA's Institute for Artificial Intelligence for the support provided during the writing of this thesis. It wouldn't have been possible without the resources and guidance they've given me.
+
+### Packages and data:
+[fCWT](https://github.com/fastlib/fCWT)
+
+[vit-pytorch](https://github.com/lucidrains/vit-pytorch#3d-vit)
+
+[DEAP](https://www.eecs.qmul.ac.uk/mmv/datasets/deap/download.html)
