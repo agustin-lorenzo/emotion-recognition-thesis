@@ -72,8 +72,8 @@ Metric | Valence | Arousal | Overall
 
 ## Plans
 This is still a work in progress. There are a number of things that I am still currently working on. A (non-comprehensive) to-do list is below:
-- [ ] Train a cross-subject model (model trained on data from all participants)
-- [ ] Confusion matrix for cross subject model
+- [x] Train a cross-subject model (model trained on data from all participants)
+- [x] Confusion matrix for cross subject model
 - [ ] Other classification metrics for all models (precision, recall, f1, etc.)
 - [ ] Finetune cross-subject model on private dataset
 
