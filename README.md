@@ -67,13 +67,13 @@ A unique model was created for each of the 32 subjects present in the DEAP datas
 ## Results (so far) 
 Metric | Valence | Arousal | Overall
 --- | --- | --- | ---
-*subject-dependent models average accuracies (95% CI)* | (98.57, 99.28) | (98.61, 99.38) | (97.87, 98.93)
-*cross-subject model accuracies* | TBD | TBD | TBD
+*subject-dependent models average accuracies (95% CI)* | (98.57, 99.28)% | (98.61, 99.38)% | (97.87, 98.93)%
+*cross-subject model accuracies* | 99.84% | 99.88% | 99.73%
 
 ## Plans
 This is still a work in progress. There are a number of things that I am still currently working on. A (non-comprehensive) to-do list is below:
-- [ ] Train a cross-subject model (model trained on data from all participants)
-- [ ] Confusion matrix for cross subject model
+- [x] Train a cross-subject model (model trained on data from all participants)
+- [x] Confusion matrix for cross subject model
 - [ ] Other classification metrics for all models (precision, recall, f1, etc.)
 - [ ] Finetune cross-subject model on private dataset
 
