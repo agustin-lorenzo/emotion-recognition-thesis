@@ -2,12 +2,12 @@ import fcwt
 import numpy as np
 import pickle
 import math
+import copy
 from sklearn.model_selection import train_test_split
 
 # initialize constants
 SNR = 5 # signal-to-noise ratio
-REP_FACTOR = 1 # how many augmented samples are created out of one original sample
-NUM_EPOCHS = 20 # number of epochs for training
+REP_FACTOR = 4 # how many augmented samples are created out of one original sample
 
 # helper method for adding gaussian noise to each frame in a sample, includes signal-to-noise parameter
 def add_gaussian_noise(signal, snr_db=5):
@@ -88,8 +88,20 @@ for subject in range(32):
             original_sample = all_frames[i:i+window_size]
             six_sec_samples.append(original_sample)
             sample_classes.append(classes[trial])
+            
+            # create 4 augmented copies from original
+            # frame as suggested in Li et al. 2016
+            for _ in range(REP_FACTOR-1): # commenting out to try on-the-fly augmentation
+                augmented_sample = []
+                for frame in original_sample:
+                    noisy_frame = copy.deepcopy(frame)
+                    for channel in range(32):
+                        noisy_frame[:, :, channel] = add_gaussian_noise(noisy_frame[:, :, channel], SNR)
+                    augmented_sample.append(noisy_frame)
+                
+                six_sec_samples.append(augmented_sample)
+                sample_classes.append(classes[trial])
 
-        # TODO: come back and re-add augmented frames with gaussian noise if 2560 samples aren't enough for cross-sub model
 
 # save train/test splits to disk
 print("All frames initialized.")
@@ -98,7 +110,7 @@ train_data, test_data, train_labels, test_labels = train_test_split(
     six_sec_samples, sample_classes, test_size=0.2, random_state=23, stratify=sample_classes
 )
 print("Saving to disk...")
-np.savez_compressed("train_data.npz", samples=train_data, labels=train_labels)
-np.savez_compressed("test_data.npz", samples=test_data, labels=test_labels)
+np.savez("train_data.npz", samples=train_data, labels=train_labels)
+np.savez("test_data.npz", samples=test_data, labels=test_labels)
 del six_sec_samples, sample_classes, train_data, test_data, train_labels, test_labels
 print("\nDone.")

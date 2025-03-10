@@ -17,11 +17,15 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # initialize constants
-SNR = 5 # signal-to-noise ratio
-REP_FACTOR = 1 # how many augmented samples are created out of one original sample
-NUM_EPOCHS = 50 # number of epochs for training
+BATCH_SIZE = 8
+NUM_WORKERS = 4
+PIN_MEMORY = True
 
-csv_file = f'cross_subject_model_metrics_{NUM_EPOCHS}epochs.csv'
+SNR = 5 # signal-to-noise ratio
+REP_FACTOR = 4 # how many augmented samples are created out of one original sample
+NUM_EPOCHS = 120 # number of epochs for training
+
+csv_file = f'cross_subject_model_metrics_{REP_FACTOR}augmented_{NUM_EPOCHS}epochs.csv'
 header = ["subject", "valence_accuracy", "arousal_accuracy", "overall_accuracy"]
 
 if not os.path.exists(csv_file):
@@ -38,47 +42,53 @@ def add_gaussian_noise_torch(signal_tensor, snr_db=5):
     noise = torch.randn_like(signal_tensor) * noise_std
     return signal_tensor + noise
 
+def apply_gpu_noise(inputs, snr_db=5, prob=0.8):
+    if random.random() < prob:
+        for b in range(inputs.size(0)):       # each sample in batch
+            for frame_idx in range(inputs.size(1)):  # 768 frames
+                for col in range(32):  # each column
+                    inputs[b, frame_idx, :, :, col] = add_gaussian_noise_torch(
+                        inputs[b, frame_idx, :, :, col],
+                        snr_db
+                    )
+    return inputs
+
 # dataset object for CWT data
-class CWTDataset(Dataset):
-        def __init__(self, data, labels):
-            self.data = torch.tensor(np.array(data), dtype=torch.float32).permute(0, 2, 1, 3, 4)
-            # normalize data over entire dataset
-            self.data = self.data / 255.0
-            self.mean = self.data.mean(dim=(0, 2, 3, 4), keepdim=True)
-            self.std = self.data.std(dim=(0, 2, 3, 4), keepdim=True) + 1e-8
-            self.data = (self.data - self.mean) / self.std
-            
-            self.labels = torch.tensor(labels, dtype=torch.long)
-            self.training = False
+class OnTheFlyDataset(Dataset):
+    def __init__(self, data_file, training=False, snr_db=5, apply_noise_prob=0.8): # TODO: remove params if gpu-augment works
+        self.npz_obj = np.load(data_file, mmap_mode='r')
+        self.samples = self.npz_obj['samples'] 
+        self.labels = self.npz_obj['labels']   
+        self.training = training
+        # self.snr_db = snr_db # commenting out to try gpu-gaussian noise
+        # self.apply_noise_prob = apply_noise_prob
 
-        def __len__(self):
-            return len(self.labels)
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        # Lazy-load a single sample from disk (shape: (768, 3, 32, 32))
+        sample_np = self.samples[idx]
+        label = self.labels[idx]
+        sample_tensor = torch.from_numpy(sample_np).float()
         
-        def __getitem__(self, index):
-            x = self.data[index].clone()
-            label = self.labels[index]
-            if self.training: # extra Gaussian noise during training
-                if random.random() > 0.5:
-                    #x += torch.randn_like(x) * 0.05 * random.random()
-                    augmented_sample = []
-                    for frame in x:
-                        noisy_frame = copy.deepcopy(frame)
-                        for channel in range(32):
-                            noisy_frame[:, :, channel] = add_gaussian_noise_torch(noisy_frame[:, :, channel], SNR)
-                        augmented_sample.append(noisy_frame)
+        sample_tensor /= 255.0
+        mean = sample_tensor.mean()
+        std = sample_tensor.std() + 1e-8
+        sample_tensor = (sample_tensor - mean) / std
 
-                    augmented_tensor = torch.stack(augmented_sample, dim=0)
-                    return augmented_tensor, label
-                
-            return x, label
+        # # If training, optionally apply noise # commenting out to try gpu-gaussian noise
+        # if self.training:
+        #     if random.random() < self.apply_noise_prob:
+        #         for frame_idx in range(sample_tensor.size(0)):   # 768 frames
+        #             frame = sample_tensor[frame_idx]
+        #             for col in range(32):  # each column
+        #                 frame[:, :, col] = add_gaussian_noise_torch(frame[:, :, col], self.snr_db)
 
-        def train(self):
-            self.training = True
-            return self
+        sample_tensor = sample_tensor.permute(1, 0, 2, 3) # reorder sample for correct vit input
+        return sample_tensor, torch.tensor(label, dtype=torch.long)
 
-        def eval(self):
-            self.training = False
-            return self
+
 
 vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
     image_size=32,
@@ -99,15 +109,23 @@ vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
 
 # model training
 print("Loading training data...")
-train_file = np.load("test_data.npz", allow_pickle=True) # read train data from disk
-train_data = train_file["samples"]
-train_labels = train_file["labels"]
-train_loader = DataLoader(CWTDataset(train_data, train_labels).train(), batch_size=4, shuffle=True)
+train_dataset = OnTheFlyDataset(
+    data_file="train_data.npz",   # must be uncompressed
+    training=True,
+    snr_db=SNR,
+    apply_noise_prob=0.5
+)
+train_loader = DataLoader(train_dataset,
+                          shuffle=True,
+                          batch_size=BATCH_SIZE,
+                          num_workers=NUM_WORKERS,
+                          pin_memory=PIN_MEMORY)
 print("Training data initialized.")
-print(f"\nTrain dataset shape:\n\t{np.shape(train_data)}")
+print(f"Training set size: {len(train_dataset)} samples")
 
 loss_fn = nn.CrossEntropyLoss() # cross entropy is appropriate for classification
 optimizer = optim.AdamW(vit.parameters(), lr=3e-4, weight_decay=0.01)
+scaler = torch.cuda.amp.GradScaler()
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer, 
     max_lr=3e-4,
@@ -121,42 +139,51 @@ for epoch in range(NUM_EPOCHS):
     for inputs, targets in train_loader:
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
-        outputs = vit(inputs)
-        loss = loss_fn(outputs, targets)
+        with torch.cuda.amp.autocast():
+            outputs = vit(inputs)
+            loss = loss_fn(outputs, targets)
         print(f"\tEpoch: {epoch+1}\tLoss:{loss}", end='\r')
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
     scheduler.step()
 print("\nFinished Training.")
-del train_loader, train_data, train_labels, train_file # free up space
+del train_loader, train_dataset
 gc.collect()
 
 
 # model testing
+print("Loading testing data...")
+test_dataset = OnTheFlyDataset(
+    data_file="test_data.npz",    # must be uncompressed
+    training=False
+)
+test_loader = DataLoader(test_dataset,
+                        shuffle=True,
+                        batch_size=BATCH_SIZE,
+                        num_workers=NUM_WORKERS,
+                        pin_memory=PIN_MEMORY)
+print("Testing data initalized.")
+print(f"Testing set size: {len(test_dataset)} samples")
+
 vit.eval()
 valence_correct = 0 # valence-specific accuracy
 arousal_correct = 0 # arousal-specific accuracy
 overall_correct = 0 # overall accuracy in classifying accross 4 possible cases
 total = 0
 
-print("Loading testing data...")
-test_file = np.load("test_data.npz", allow_pickle=True) # read train data from disk
-test_data = test_file["samples"]
-test_labels = test_file["labels"]
-test_loader = DataLoader(CWTDataset(test_data, test_labels).eval(), batch_size=4)
-print("Testing data initalized.")
-print(f"Test dataset shape:\n\t{np.shape(test_data)}")
-
 # lists for confusion matrix
-pred = []
 y_test = []
+pred = []
 with torch.no_grad():
     for inputs, targets in test_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
+        inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
+        inputs = apply_gpu_noise(inputs, snr_db=SNR, prob=0.8)
         outputs = vit(inputs)
         _, predicted = torch.max(outputs, 1)
-        y_test.append(targets)
-        pred.append(predicted)
+       
+        y_test.append(targets.cpu()) # move tensors to cpu and append to saved list
+        pred.append(predicted.cpu())
 
         # getting number of correct instances over all instances
         total += targets.size(0) 
@@ -181,14 +208,22 @@ with open(csv_file, mode='a', newline='') as file:
     writer.writerow(["all", valence_accuracy, arousal_accuracy, overall_accuracy])
     file.flush()  # flush ensures the row is written immediately
 
+# save model
 torch.save(vit.state_dict(), f"models/cross_subject_model_{NUM_EPOCHS}epochs.pth")
 
 # creating confusion matrix
-cm = confusion_matrix(y_test, pred)
+class_names = ["LVLA", "LVHA", "HVLA", "HVHA"]
+
+pred_cpu = torch.cat(pred) # converting test/pred lists to numpy array format for confusion matrix
+y_test_cpu = torch.cat(y_test)
+y_test_np = y_test_cpu.numpy()
+pred_np = pred_cpu.numpy()
+
+cm = confusion_matrix(y_test_np, pred_np)
 cm_df = pd.DataFrame(cm)
 cm_df.to_csv("cm_df.csv", index=False)
 
-disp = ConfusionMatrixDisplay(cm)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 disp.plot()
 plt.savefig("confusion_matrix.png")
 plt.close()
