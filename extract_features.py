@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import fcwt
+import gc
 
 # initialize constant variables
 # paramaters for calculating cwt, not to be changed
@@ -58,5 +59,18 @@ for participant in df['par_id'].unique():
         labels.append(cls)
         
 print("\nsaving features...")
-np.savez_compressed('data/extracted_features.npz', trials=trials, labels=labels)
+trials_array = np.stack(trials)  # shape: (num_trials, 128, 128, 1280)
+del trials
+gc.collect()
+
+labels_array = np.array(labels)
+del labels
+gc.collect()
+
+print("\tTrials shape:", trials_array.shape)  # should be (num_trials, 128, 128, 1280)
+print("\tTrials dtype:", trials_array.dtype)
+
+print("\n\tLabels shape:", labels_array.shape)  # should be (num_trials,) or (num_trials, 1)
+print("\tLabels dtype:", labels_array.dtype)
+np.savez_compressed('data/extracted_features_compressed.npz', trials=trials_array, labels=labels_array)
 print("done.")

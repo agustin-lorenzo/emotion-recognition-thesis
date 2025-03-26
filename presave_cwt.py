@@ -3,11 +3,12 @@ import numpy as np
 import pickle
 import math
 import copy
+import random
 from sklearn.model_selection import train_test_split
 
 # initialize constants
 SNR = 5 # signal-to-noise ratio
-REP_FACTOR = 4 # how many augmented samples are created out of one original sample
+REP_FACTOR = 2 # how many augmented samples are created out of one original sample
 
 # helper method for adding gaussian noise to each frame in a sample, includes signal-to-noise parameter
 def add_gaussian_noise(signal, snr_db=5):
@@ -107,10 +108,57 @@ for subject in range(32):
 print("All frames initialized.")
 print("\nCreating train/test splits...")    
 train_data, test_data, train_labels, test_labels = train_test_split(
-    six_sec_samples, sample_classes, test_size=0.2, random_state=23, stratify=sample_classes
+    six_sec_samples, sample_classes, test_size=0.1, random_state=23, stratify=sample_classes
 )
+
+print("\nOversampling minority classes and balancing training set...")
+# 2) Group the training samples by class
+train_dict = {0: [], 1: [], 2: [], 3: []}
+for sample, label in zip(train_data, train_labels):
+    train_dict[label].append(sample)
+
+# 3) Find the largest class size
+max_size = max(len(train_dict[c]) for c in train_dict)
+
+# 4) Oversample + Augment the minority classes
+for c in train_dict:
+    needed = max_size - len(train_dict[c])
+    if needed > 0:
+        # We'll randomly sample from the existing samples to replicate
+        existing_samples = train_dict[c]
+        for _ in range(needed):
+            base_sample = random.choice(existing_samples)
+            
+            # Instead of just copying base_sample, 
+            # we'll add fresh noise to each new oversampled sample:
+            new_sample = []
+            for frame_img in base_sample:
+                noisy_frame = copy.deepcopy(frame_img)
+                for col in range(32):
+                    noisy_frame[:, :, col] = add_gaussian_noise(noisy_frame[:, :, col], snr_db=SNR)
+                new_sample.append(noisy_frame)
+
+            train_dict[c].append(new_sample)
+
+# 5) Combine the balanced classes back
+balanced_train_samples = []
+balanced_train_labels  = []
+for c in train_dict:
+    balanced_train_samples.extend(train_dict[c])
+    balanced_train_labels.extend([c]*len(train_dict[c]))
+
+# 6) Shuffle the balanced training set (optional, but recommended)
+combined = list(zip(balanced_train_samples, balanced_train_labels))
+random.shuffle(combined)
+balanced_train_samples, balanced_train_labels = zip(*combined)
+
+# Convert them to lists (zip(*) returns tuples)
+balanced_train_samples = list(balanced_train_samples)
+balanced_train_labels  = list(balanced_train_labels)
+
+print("\nTrain set size after balancing:", len(balanced_train_samples))
 print("Saving to disk...")
-np.savez("train_data.npz", samples=train_data, labels=train_labels)
+np.savez("train_data.npz", samples=balanced_train_samples, labels=balanced_train_labels)
 np.savez("test_data.npz", samples=test_data, labels=test_labels)
 del six_sec_samples, sample_classes, train_data, test_data, train_labels, test_labels
 print("\nDone.")
