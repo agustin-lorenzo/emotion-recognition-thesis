@@ -23,7 +23,7 @@ PIN_MEMORY = True
 
 SNR = 5 # signal-to-noise ratio
 REP_FACTOR = 4 # how many augmented samples are created out of one original sample
-NUM_EPOCHS = 120 # number of epochs for training
+NUM_EPOCHS = 100 # number of epochs for training
 
 csv_file = f'cross_subject_model_metrics_{REP_FACTOR}augmented_{NUM_EPOCHS}epochs.csv'
 header = ["subject", "valence_accuracy", "arousal_accuracy", "overall_accuracy"]
@@ -209,7 +209,7 @@ with open(csv_file, mode='a', newline='') as file:
     file.flush()  # flush ensures the row is written immediately
 
 # save model
-torch.save(vit.state_dict(), f"models/cross_subject_model_{NUM_EPOCHS}epochs.pth")
+torch.save(vit.state_dict(), f"models/cross_subject_model_{REP_FACTOR}augmented_{NUM_EPOCHS}epochs.pth")
 
 # creating confusion matrix
 class_names = ["LVLA", "LVHA", "HVLA", "HVHA"]
@@ -221,7 +221,7 @@ pred_np = pred_cpu.numpy()
 
 cm = confusion_matrix(y_test_np, pred_np)
 cm_df = pd.DataFrame(cm)
-cm_df.to_csv("cm_df.csv", index=False)
+cm_df.to_csv(f"cm_df_{REP_FACTOR}augmented_{NUM_EPOCHS}epochs.csv", index=False)
 
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 disp.plot()
