@@ -11,6 +11,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_class_weight
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim import AdamW
 import os
 import warnings
 
@@ -24,7 +25,7 @@ NUM_WORKERS = 0 # set to 0 if on-the-fly augmentation, otherwise 4
 PIN_MEMORY = True
 NUM_EPOCHS = 50 # number of epochs for training
 LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 0.01
+WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 
 # data augmentation parameters, if needed
 SNR = 5 # signal-to-noise ratio
@@ -69,25 +70,25 @@ print("\tFile opened.")
 trials = data['trials']
 print("\tTrials loaded.")
 print("\t\tShape:\n\t\t", trials.shape)
-labels = data['labels']
+labels = data['labels'].astype(int) #TODO: save as int in original feature extraction
 print("\tLabels loaded.")
-dataset = EEGDataset(trials, labels)
 print("Data loaded.")
 
-# set up 10-fold cross-validation
+# set up stratified 10-fold cross-validation
 kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 fold_metrics = []
 epoch_loss_records = []
 fold_idx = 1
-for train_idx, test_idx in kf.split(dataset):
+for train_idx, test_idx in kf.split(trials, labels):
     print("=====================================")
-    print(f"| Fold {fold_idx} |")
-    print("-----------")
-    train_set = torch.utils.data.Subset(dataset, train_idx)
-    test_set = torch.utils.data.Subset(dataset, test_idx)
+    print(f"|| Fold {fold_idx} ||")
+    print("============")
     
-    train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
-    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    # initalize datasets for fold
+    train_dataset = EEGDataset(trials[train_idx], labels[train_idx], training=True)
+    test_dataset = EEGDataset(trials[test_idx], labels[test_idx], training=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
     
     # get class weights for weighted loss function
     train_labels = labels[train_idx]
@@ -117,10 +118,9 @@ for train_idx, test_idx in kf.split(dataset):
     
     # training hyperparameters
     loss_fn = nn.CrossEntropyLoss(weight=class_weights)
-    #optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # original weight decay: 0.01
-    optimizer = nn.CrossEntropyLoss(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer = AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) 
     scaler = torch.cuda.amp.GradScaler()
-    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR( # original scheduler
     #     optimizer,
     #     max_lr=LEARNING_RATE * 2,
     #     total_steps=len(train_loader)*NUM_EPOCHS,
@@ -141,7 +141,6 @@ for train_idx, test_idx in kf.split(dataset):
     for epoch in range(NUM_EPOCHS):
         print()
         vit.train()
-        dataset.training = True
         epoch_train_loss = 0.0
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
@@ -155,13 +154,12 @@ for train_idx, test_idx in kf.split(dataset):
             scaler.update()
             scheduler.step()
             epoch_train_loss += loss.item() * inputs.size(0)
-        epoch_train_loss /= len(train_set)
+        epoch_train_loss /= len(train_dataset)
         train_epoch_losses.append(epoch_train_loss)
         
         # validation loop for each epoch
         print("\n\tValidation:")
         vit.eval()
-        dataset.training = False
         epoch_val_loss = 0.0
         correct_val = 0
         total_val = 0
@@ -174,7 +172,7 @@ for train_idx, test_idx in kf.split(dataset):
                 _, preds = torch.max(outputs, dim=1)
                 correct_val += torch.sum(preds == targets).sum().item()
                 total_val += targets.size(0)
-        epoch_val_loss /= len(test_set)
+        epoch_val_loss /= len(test_dataset)
         val_accuracy = correct_val / total_val
         val_epoch_losses.append(epoch_val_loss)
         print(f"\tLoss: {epoch_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
@@ -183,7 +181,6 @@ for train_idx, test_idx in kf.split(dataset):
     # testing loop
     print("\nTesting...")
     vit.eval()
-    dataset.training = False
     all_preds = []
     all_targets = []
     all_probs = []
