@@ -18,16 +18,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 
 # initialize constants
-BATCH_SIZE = 2
+BATCH_SIZE = 8
 NUM_WORKERS = 0 # set to 0 if on-the-fly augmentation, otherwise 4
 PIN_MEMORY = True
 NUM_EPOCHS = 50 # number of epochs for training
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0.01
 
 # data augmentation parameters, if needed
 SNR = 5 # signal-to-noise ratio
 REP_FACTOR = 4 # how many augmented samples are created out of one original sample
-APPLY_NOISE_PROB = 0.1 # probability of applying noise to a sample
+APPLY_NOISE_PROB = 0.2 # probability of applying noise to a sample
 
 # helper method for adding gaussian noise to each frame in a sample, includes signal-to-noise parameter
 # altered to handle pytorch tensors rather than numpy array
@@ -52,7 +53,7 @@ class EEGDataset(Dataset):
     def __getitem__(self, idx):
         trial = self.trials[idx]                # shape: (frames, height, width), dtype: uint8
         trial = np.expand_dims(trial, axis=0)     # shape: (1, frames, height, width)
-        trial = torch.from_numpy(trial).float()   # convert to float32 tensor
+        trial = torch.from_numpy(trial).float() / 255.0  # convert to float32 tensor, normalize to [0, 1]
         # add gaussian noise if training
         if self.training and random.random() < self.apply_noise_prob:
             for frame in range(trial.size(1)):
@@ -66,7 +67,7 @@ data = np.load('data/extracted_features_compressed.npz')
 print("\tFile opened.")
 trials = data['trials']
 print("\tTrials loaded.")
-print("\tShape:\n\t", trials.shape)
+print("\t\tShape:\n\t\t", trials.shape)
 labels = data['labels']
 print("\tLabels loaded.")
 dataset = EEGDataset(trials, labels)
@@ -95,8 +96,8 @@ for train_idx, test_idx in kf.split(dataset):
         frame_patch_size=32,
         num_classes=4,
         dim=768, # original: 768
-        depth=16, # original: 16
-        heads=16, # original: 16
+        depth=6, # original: 16
+        heads=8, # original: 16
         mlp_dim=1024, # original: 1024
         channels=1,
         dropout=0.3, # original: 0.5
@@ -104,12 +105,13 @@ for train_idx, test_idx in kf.split(dataset):
         pool='mean'
     ).to(device)
     
+    # training hyperparameters
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=0.1) # original weight decay: 0.01
+    optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # original weight decay: 0.01
     scaler = torch.cuda.amp.GradScaler()
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=LEARNING_RATE * 10,
+        max_lr=LEARNING_RATE * 2,
         total_steps=len(train_loader)*NUM_EPOCHS,
         pct_start=0.3
     )
@@ -139,7 +141,7 @@ for train_idx, test_idx in kf.split(dataset):
         epoch_train_loss /= len(train_set)
         train_epoch_losses.append(epoch_train_loss)
         
-        # record validation loss to ensure model is improving on unseen data
+        # validation loop for each epoch
         print("\n\tValidation:")
         vit.eval()
         dataset.training = False
@@ -161,7 +163,7 @@ for train_idx, test_idx in kf.split(dataset):
         print(f"\tLoss: {epoch_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
     print(f"\nFinished training fold {fold_idx}")
     
-    # testing/validation loop
+    # testing loop
     print("\nTesting...")
     vit.eval()
     dataset.training = False
@@ -184,16 +186,17 @@ for train_idx, test_idx in kf.split(dataset):
         
         # calculate valence/arousal-specific metrics
         print("Computing metrics...")
-        true_valence = np.array([0 if t in (0, 1) else 1 for t in all_targets])
-        pred_valence = np.array([0 if p in (0, 1) else 1 for p in all_preds])
+        true_valence = (all_targets >= 2).astype(int)  # 0=low (0,1), 1=high (2,3)
+        pred_valence = (all_preds >= 2).astype(int)
 
-        true_arousal = np.array([0 if t in (0, 2) else 1 for t in all_targets])
-        pred_arousal = np.array([0 if p in (0, 2) else 1 for p in all_preds])
+        # Arousal: even vs odd (0/2 vs 1/3)
+        true_arousal = (all_targets % 2).astype(int)  # 0=even (0,2), 1=odd (1,3)
+        pred_arousal = (all_preds % 2).astype(int)
         
         valence_accuracy = np.mean(true_valence == pred_valence)
-        valence_precision = precision_score(true_valence, pred_valence, average='binary')
-        valence_recall = recall_score(true_valence, pred_valence, average='binary')
-        valence_f1 = f1_score(true_valence, pred_valence, average='binary')
+        valence_precision = precision_score(true_valence, pred_valence, average='binary', zero_division=0)
+        valence_recall = recall_score(true_valence, pred_valence, average='binary', zero_division=0)
+        valence_f1 = f1_score(true_valence, pred_valence, average='binary', zero_division=0)
         valence_prob = all_probs[:, 2] + all_probs[:, 3]
         try:
             roc_auc_valence = roc_auc_score(true_valence, valence_prob)
@@ -202,9 +205,9 @@ for train_idx, test_idx in kf.split(dataset):
             print("Valence ROC AUC computation error:", e)
 
         arousal_accuracy = np.mean(true_arousal == pred_arousal)
-        arousal_precision = precision_score(true_arousal, pred_arousal, average='binary')
-        arousal_recall = recall_score(true_arousal, pred_arousal, average='binary')
-        arousal_f1 = f1_score(true_arousal, pred_arousal, average='binary')
+        arousal_precision = precision_score(true_arousal, pred_arousal, average='binary', zero_division=0)
+        arousal_recall = recall_score(true_arousal, pred_arousal, average='binary', zero_division=0)
+        arousal_f1 = f1_score(true_arousal, pred_arousal, average='binary', zero_division=0)
         arousal_prob = all_probs[:, 1] + all_probs[:, 3]
         try:
             roc_auc_arousal = roc_auc_score(true_arousal, arousal_prob)
@@ -258,7 +261,7 @@ for train_idx, test_idx in kf.split(dataset):
             })
         print("Metrics recorded.")
         
-        # Print overall metrics
+        # print overall metrics
         print("Overall Metrics:")
         print(f"  Accuracy:          {accuracy:.4f}")
         print(f"  Precision:         {precision_overall:.4f}")
@@ -269,7 +272,7 @@ for train_idx, test_idx in kf.split(dataset):
         else:
             print("  ROC AUC:           Could not compute")
 
-        # Print valence metrics
+        # print valence metrics
         print("\nValence Metrics:")
         print(f"  Accuracy:          {valence_accuracy:.4f}")
         print(f"  Precision:         {valence_precision:.4f}")
@@ -280,7 +283,7 @@ for train_idx, test_idx in kf.split(dataset):
         else:
             print("  ROC AUC:           Could not compute")
 
-        # Print arousal metrics
+        # print arousal metrics
         print("\nArousal Metrics:")
         print(f"  Accuracy:          {arousal_accuracy:.4f}")
         print(f"  Precision:         {arousal_precision:.4f}")
