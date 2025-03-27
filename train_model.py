@@ -27,7 +27,7 @@ LEARNING_RATE = 3e-4
 # data augmentation parameters, if needed
 SNR = 5 # signal-to-noise ratio
 REP_FACTOR = 4 # how many augmented samples are created out of one original sample
-APPLY_NOISE_PROB = 0.2 # probability of applying noise to a sample
+APPLY_NOISE_PROB = 0.1 # probability of applying noise to a sample
 
 # helper method for adding gaussian noise to each frame in a sample, includes signal-to-noise parameter
 # altered to handle pytorch tensors rather than numpy array
@@ -78,8 +78,9 @@ fold_metrics = []
 epoch_loss_records = []
 fold_idx = 1
 for train_idx, test_idx in kf.split(dataset):
-    print("----------------------------------------")
+    print("=====================================")
     print(f"Fold {fold_idx}")
+    print("-------")
     train_set = torch.utils.data.Subset(dataset, train_idx)
     test_set = torch.utils.data.Subset(dataset, test_idx)
     
@@ -89,7 +90,7 @@ for train_idx, test_idx in kf.split(dataset):
     # initialize model
     vit = ViT( # vision transformer (original) parameters as suggested by Awan et al. 2024
         image_size=128,
-        frames=1280,
+        frames=640, # = 1280 / 2 for 5 second clips
         image_patch_size=32,
         frame_patch_size=32,
         num_classes=4,
@@ -98,17 +99,17 @@ for train_idx, test_idx in kf.split(dataset):
         heads=16, # original: 16
         mlp_dim=1024, # original: 1024
         channels=1,
-        dropout=0.5,
-        emb_dropout=0.1,
+        dropout=0.3, # original: 0.5
+        emb_dropout=0.2, # original: 0.1
         pool='mean'
     ).to(device)
     
     loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(vit.parameters(), lr=3e-4, weight_decay=0.01) # original weight decay: 0.01
+    optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=0.1) # original weight decay: 0.01
     scaler = torch.cuda.amp.GradScaler()
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        max_lr=3e-5,
+        max_lr=LEARNING_RATE * 10,
         total_steps=len(train_loader)*NUM_EPOCHS,
         pct_start=0.3
     )
@@ -118,9 +119,8 @@ for train_idx, test_idx in kf.split(dataset):
     val_epoch_losses = []
     
     # training loop
-    print()
     for epoch in range(NUM_EPOCHS):
-        print(f"Training epoch {epoch + 1}:")
+        print()
         vit.train()
         dataset.training = True
         epoch_train_loss = 0.0
