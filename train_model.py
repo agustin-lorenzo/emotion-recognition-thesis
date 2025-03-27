@@ -2,14 +2,15 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 import torch
-import torch.optim as optim
 import torch.nn as nn
 from vit_pytorch.vit_3d import ViT
 import gc
 import random
 from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score, roc_auc_score
-from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import label_binarize
+from sklearn.utils.class_weight import compute_class_weight
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import os
 import warnings
 
@@ -74,19 +75,28 @@ dataset = EEGDataset(trials, labels)
 print("Data loaded.")
 
 # set up 10-fold cross-validation
-kf = KFold(n_splits=10, shuffle=True, random_state=42)
+kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 fold_metrics = []
 epoch_loss_records = []
 fold_idx = 1
 for train_idx, test_idx in kf.split(dataset):
     print("=====================================")
-    print(f"Fold {fold_idx}")
-    print("-------")
+    print(f"| Fold {fold_idx} |")
+    print("-----------")
     train_set = torch.utils.data.Subset(dataset, train_idx)
     test_set = torch.utils.data.Subset(dataset, test_idx)
     
     train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
     test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    
+    # get class weights for weighted loss function
+    train_labels = labels[train_idx]
+    class_weights = compute_class_weight('balanced', classes=np.unique(train_labels), y=train_labels)
+    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+    print("Fold class distribution:")
+    print("  Training: ", np.bincount(labels[train_idx])) 
+    print("  Testing: ", np.bincount(labels[test_idx]))
+    print()
     
     # initialize model
     vit = ViT( # vision transformer (original) parameters as suggested by Awan et al. 2024
@@ -106,14 +116,21 @@ for train_idx, test_idx in kf.split(dataset):
     ).to(device)
     
     # training hyperparameters
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # original weight decay: 0.01
+    loss_fn = nn.CrossEntropyLoss(weight=class_weights)
+    #optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY) # original weight decay: 0.01
+    optimizer = nn.CrossEntropyLoss(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = torch.cuda.amp.GradScaler()
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    # scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    #     optimizer,
+    #     max_lr=LEARNING_RATE * 2,
+    #     total_steps=len(train_loader)*NUM_EPOCHS,
+    #     pct_start=0.3
+    # )
+    scheduler = CosineAnnealingWarmRestarts(
         optimizer,
-        max_lr=LEARNING_RATE * 2,
-        total_steps=len(train_loader)*NUM_EPOCHS,
-        pct_start=0.3
+        T_0=10,         # Number of epochs per restart cycle
+        T_mult=2,        # Cycle length multiplier (double after each cycle)
+        eta_min=1e-6,    # Minimum learning rate (1% of initial LR)
     )
     
     # record per-epoch train/validation losses
