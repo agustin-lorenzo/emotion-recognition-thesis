@@ -12,7 +12,7 @@ fn = 128 # number of frequencies, match channel number for square frame
 
 print("opening dataset...")
 df = pd.read_csv('data/preprocessed_video.csv')
-print("dataset opened.\n")
+print("dataset opened.")
 
 trials = [] # list of cwt videos for all trials
 labels = [] # classes corresponding to all trials
@@ -21,7 +21,7 @@ labels = [] # classes corresponding to all trials
 for participant in df['par_id'].unique():
     participant_rows = df[df['par_id'] == participant]
     
-    print("current participant: ", participant)
+    print("\ncurrent participant: ", participant)
     # iterate through trials
     for stimulus in participant_rows['stimulus'].unique():
         trial_rows = participant_rows[participant_rows['stimulus'] == stimulus]
@@ -47,19 +47,27 @@ for participant in df['par_id'].unique():
                 start = channel * fn
                 end = (channel + 1) * fn
                 frame[:, channel] = total_cwt[start:end, sample]
-            # normalize frame
-            norm_frame = (frame - frame.min()) / (frame.max() - frame.min())
-            # scale to 0-255 (although this is normalized in dataset object later, 
-            #                 it's still best to keep the input in a "video format")
-            scaled_frame = (norm_frame * 255).astype(np.uint8)
-            # append 1-channel frame without rgb
-            all_frames.append(scaled_frame) 
+            
+            norm_frame = (frame - frame.min()) / (frame.max() - frame.min()) # normalize frame
+            scaled_frame = (norm_frame * 255).astype(np.uint8) # scale to 255 for video
+            all_frames.append(scaled_frame) # append 1-channel frame, no rgb
+            
+        # split trial into 6-second samples as suggested in Arjun et al. 2021
+        window_size = 5 * 128
+        for i in range(0, 1280, window_size):
+            if i + window_size > 1280:
+                break
+            clip = all_frames[i:i+window_size]
+            trials.append(clip) # append on this level for clipping
+            labels.append(cls)
         
-        trials.append(all_frames)
-        labels.append(cls)
+        print("\tCurrent Number of Trials:", len(trials), end='\r')
+        
+        # trials.append(all_frames) # append on this level for no clipping
+        # labels.append(cls)
         
 print("\nsaving features...")
-trials_array = np.stack(trials)  # shape: (num_trials, 128, 128, 1280)
+trials_array = np.stack(trials)  # shape: (num_trials, 128, 128, 1280/2)
 del trials
 gc.collect()
 
@@ -67,10 +75,10 @@ labels_array = np.array(labels)
 del labels
 gc.collect()
 
-print("\tTrials shape:", trials_array.shape)  # should be (num_trials, 128, 128, 1280)
+print("\tTrials shape:", trials_array.shape)  # should be (num_trials, 128, 128, 1280/2)
 print("\tTrials dtype:", trials_array.dtype)
 
-print("\n\tLabels shape:", labels_array.shape)  # should be (num_trials,) or (num_trials, 1)
+print("\n\tLabels shape:", labels_array.shape)  # should be (num_trials,)
 print("\tLabels dtype:", labels_array.dtype)
 np.savez_compressed('data/extracted_features_compressed.npz', trials=trials_array, labels=labels_array)
 print("done.")
