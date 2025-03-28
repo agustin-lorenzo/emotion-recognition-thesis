@@ -53,7 +53,7 @@ for participant in df['par_id'].unique():
             all_frames.append(scaled_frame) # append 1-channel frame, no rgb
             
         # split trial into 6-second samples as suggested in Arjun et al. 2021
-        window_size = 5 * 128
+        window_size = 2 * 128 # seconds * hz
         for i in range(0, 1280, window_size):
             if i + window_size > 1280:
                 break

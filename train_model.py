@@ -10,6 +10,7 @@ from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_class_weight
+from torch.utils.data import WeightedRandomSampler
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from torch.optim import AdamW
 import os
@@ -20,17 +21,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 
 # initialize constants
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = 0 # set to 0 if on-the-fly augmentation, otherwise 4
 PIN_MEMORY = True
 NUM_EPOCHS = 50 # number of epochs for training
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 
 # data augmentation parameters, if needed
-SNR = 5 # signal-to-noise ratio
+SNR = 10 # signal-to-noise ratio
 REP_FACTOR = 4 # how many augmented samples are created out of one original sample
-APPLY_NOISE_PROB = 0.2 # probability of applying noise to a sample
+APPLY_NOISE_PROB = 0.25 # probability of applying noise to a sample
 
 # helper method for adding gaussian noise to each frame in a sample, includes signal-to-noise parameter
 # altered to handle pytorch tensors rather than numpy array
@@ -40,6 +41,19 @@ def add_gaussian_noise_torch(signal_tensor, snr_db=5):
     noise_std = torch.sqrt(noise_power)
     noise = torch.randn_like(signal_tensor) * noise_std
     return signal_tensor + noise
+
+# helper method for creating a weighted sampler to handle class imbalance
+def create_weighted_sampler(labels):
+    class_counts = np.bincount(labels)
+    weights = 1. / torch.tensor(class_counts + 1e-8, dtype=torch.float)
+    weights = weights / weights.sum()
+    sample_weights = weights[labels]
+    sampler = WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(labels),
+        replacement=True
+    )
+    return sampler
 
 # dataset object
 class EEGDataset(Dataset):
@@ -58,8 +72,7 @@ class EEGDataset(Dataset):
         trial = torch.from_numpy(trial).float() / 255.0  # convert to float32 tensor, normalize to [0, 1]
         # add gaussian noise if training
         if self.training and random.random() < self.apply_noise_prob:
-            for frame in range(trial.size(1)):
-                trial[:, frame] = add_gaussian_noise_torch(trial[:, frame], snr_db=SNR)
+            trial = add_gaussian_noise_torch(trial, snr_db=SNR)
         label = torch.tensor(self.labels[idx], dtype=torch.long)
         return trial, label
 
@@ -83,13 +96,6 @@ for train_idx, test_idx in kf.split(trials, labels):
     print("=====================================")
     print(f"|| Fold {fold_idx} ||")
     print("============")
-    
-    # initalize datasets for fold
-    train_dataset = EEGDataset(trials[train_idx], labels[train_idx], training=True)
-    test_dataset = EEGDataset(trials[test_idx], labels[test_idx], training=False)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
-    
     # get class weights for weighted loss function
     train_labels = labels[train_idx]
     class_weights = compute_class_weight('balanced', classes=np.unique(train_labels), y=train_labels)
@@ -99,21 +105,28 @@ for train_idx, test_idx in kf.split(trials, labels):
     print("  Testing: ", np.bincount(labels[test_idx]))
     print()
     
+    # initalize datasets w/ sampler for fold
+    train_sampler = create_weighted_sampler(labels[train_idx])
+    train_dataset = EEGDataset(trials[train_idx], labels[train_idx], training=True)
+    test_dataset = EEGDataset(trials[test_idx], labels[test_idx], training=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    
     # initialize model
     vit = ViT( # vision transformer (original) parameters as suggested by Awan et al. 2024
         image_size=128,
-        frames=640, # = 1280 / 2 for 5 second clips
-        image_patch_size=32,
+        frames=256, # = 1280 / 5 for 2 second clips
+        image_patch_size=16,
         frame_patch_size=32,
         num_classes=4,
         dim=768, # original: 768
-        depth=6, # original: 16
+        depth=8, # original: 16
         heads=8, # original: 16
         mlp_dim=1024, # original: 1024
         channels=1,
-        dropout=0.3, # original: 0.5
-        emb_dropout=0.2, # original: 0.1
-        pool='mean'
+        dropout=0.1, # original: 0.5
+        emb_dropout=0.1, # original: 0.1
+        pool='cls'
     ).to(device)
     
     # training hyperparameters
@@ -126,11 +139,19 @@ for train_idx, test_idx in kf.split(trials, labels):
     #     total_steps=len(train_loader)*NUM_EPOCHS,
     #     pct_start=0.3
     # )
-    scheduler = CosineAnnealingWarmRestarts(
+    # scheduler = CosineAnnealingWarmRestarts(
+    #     optimizer,
+    #     T_0=25,         # Number of epochs per restart cycle
+    #     T_mult=1,        # Cycle length multiplier (double after each cycle)
+    #     eta_min=1e-6,    # Minimum learning rate (1% of initial LR)
+    # )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        T_0=10,         # Number of epochs per restart cycle
-        T_mult=2,        # Cycle length multiplier (double after each cycle)
-        eta_min=1e-6,    # Minimum learning rate (1% of initial LR)
+        mode='min',
+        factor=0.5,
+        patience=5,
+        verbose=True,
+        min_lr=1e-6
     )
     
     # record per-epoch train/validation losses
@@ -148,14 +169,24 @@ for train_idx, test_idx in kf.split(trials, labels):
             with torch.cuda.amp.autocast():
                 outputs = vit(inputs)
                 loss = loss_fn(outputs, targets)
-            print(f"\tEpoch: {epoch+1}\tCurrent Loss:{loss}", end='\r')
+            
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            total_norm = 0.0
+            for p in vit.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+            print(f"\tEpoch: {epoch+1}\tCurrent Loss:{loss}\t   Gradient norm: {total_norm:.4f}", end='\r')
+            torch.nn.utils.clip_grad_norm_(vit.parameters(), max_norm=5.0)
             scaler.step(optimizer)
             scaler.update()
-            scheduler.step()
+            #scheduler.step() # original scheduler location for one-cycle lr
             epoch_train_loss += loss.item() * inputs.size(0)
         epoch_train_loss /= len(train_dataset)
         train_epoch_losses.append(epoch_train_loss)
+        #scheduler.step() # update lr per epoch for cosine annealing
         
         # validation loop for each epoch
         print("\n\tValidation:")
@@ -175,7 +206,8 @@ for train_idx, test_idx in kf.split(trials, labels):
         epoch_val_loss /= len(test_dataset)
         val_accuracy = correct_val / total_val
         val_epoch_losses.append(epoch_val_loss)
-        print(f"\tLoss: {epoch_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
+        print(f"\t\tVal Loss: {epoch_val_loss:.4f} | Accuracy: {val_accuracy:.4f}")
+        scheduler.step(epoch_val_loss)
     print(f"\nFinished training fold {fold_idx}")
     
     # testing loop
