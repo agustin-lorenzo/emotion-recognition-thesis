@@ -10,7 +10,7 @@ from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.data import WeightedRandomSampler, ConcatDataset
+from torch.utils.data import WeightedRandomSampler, ConcatDataset, Subset
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR, LinearLR, SequentialLR
 from torch.optim import AdamW
 import os
@@ -20,6 +20,29 @@ import wandb
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
+
+# class SimpleCNN(nn.Module):
+#     def __init__(self, num_classes=4):
+#         super(SimpleCNN, self).__init__()
+#         self.conv1 = nn.Conv3d(1, 8, kernel_size=3, stride=1, padding=1)
+#         self.relu = nn.ReLU()
+#         self.pool = nn.MaxPool3d(2)
+#         self.conv2 = nn.Conv3d(8, 16, kernel_size=3, stride=1, padding=1)
+#         self.conv3 = nn.Conv3d(16, 32, kernel_size=3, stride=1, padding=1)
+#         self.adaptive_pool = nn.AdaptiveAvgPool3d(1)
+#         self.fc = nn.Linear(32, num_classes)
+        
+#     def forward(self, x):
+#         x = self.relu(self.conv1(x))
+#         x = self.pool(x)
+#         x = self.relu(self.conv2(x))
+#         x = self.pool(x)
+#         x = self.relu(self.conv3(x))
+#         x = self.pool(x)
+#         x = self.adaptive_pool(x)
+#         x = torch.flatten(x, 1)
+#         x = self.fc(x)
+#         return x
 
 # training hyperparameters
 BATCH_SIZE = 16
@@ -47,29 +70,7 @@ SNR = 5 # signal-to-noise ratio
 REP_FACTOR = 2 # how many augmented samples are created out of one original sample
 APPLY_NOISE_PROB = 0.5 # probability of applying noise to a sample
 
-wandb.init(
-    project="emotion-recognition",
-    name=f"{VIT_FRAMES/128}sec_{LEARNING_RATE:.1e}lr",
-    config={
-        "batch_size": BATCH_SIZE,
-        "num_epochs": NUM_EPOCHS,
-        "learning_rate": LEARNING_RATE,
-        "weight_decay": WEIGHT_DECAY,
-        "gradient_clip": GRADIENT_CLIP,
-        "vit_dim": VIT_DIM,
-        "vit_depth": VIT_DEPTH,
-        "vit_heads": VIT_HEADS,
-        "vit_mlp_dim": VIT_MLP_DIM,
-        "vit_dropout": VIT_DROPOUT,
-        "vit_emb_dropout": VIT_EMB_DROPOUT,
-        "vit_pool": VIT_POOL,
-        "vit_image_patch": VIT_IMAGE_PATCH,
-        "vit_frame_patch": VIT_FRAME_PATCH,
-        "snr": SNR,
-        "rep_factor": REP_FACTOR,
-        "apply_noise_prob": APPLY_NOISE_PROB
-    }
-)
+
 
 def compute_mean_std(trials, batch_size=1000):
     """
@@ -116,7 +117,7 @@ def create_weighted_sampler(labels):
     sample_weights = weights[labels_tensor]
     sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(labels),
+        num_samples=len(labels)*REP_FACTOR,
         replacement=True
     )
     return sampler
@@ -183,16 +184,24 @@ class DatasetRepeater(Dataset):
         idx = idx % len(self.dataset)
         return self.dataset[idx]
 
-# # load data, create dataset/dataloader objects
-# print("Loading data...")
-# video_data = np.load('data/extracted_features_video.npz', mmap_mode='r')
-# picture_data = np.load('data/extracted_features_picture.npz', mmap_mode='r')
-# print("\tFile opened.")
-# picture_trials = picture_data['trials']
-# video_trials = video_data['trials']
-# print("\tTrials loaded.")
-# picture_labels = picture_data['labels'].astype(int)
-# video_labels = video_data['labels']
+# load data, create dataset/dataloader objects
+print("Loading data...")
+video_data = np.load('data/extracted_features_video.npz', mmap_mode='r')
+picture_data = np.load('data/extracted_features_picture.npz', mmap_mode='r')
+print("\tFile opened.")
+picture_trials = picture_data['trials']
+video_trials = video_data['trials']
+print("\tTrials loaded.")
+picture_labels = picture_data['labels'].astype(int)
+video_labels = video_data['labels']
+# Create dataset objects that wrap the memmapped arrays
+video_dataset = EEGDataset(video_trials, video_labels, training=True)
+picture_dataset = EEGDataset(picture_trials, picture_labels.astype(int), training=True)
+
+# Use PyTorch's ConcatDataset to combine them without concatenating the underlying arrays
+combined_dataset = ConcatDataset([video_dataset, picture_dataset])
+combined_labels = np.concatenate((video_labels, picture_labels), axis=0)
+print("\tCombined Shape:", len(combined_dataset))
 # # trials = np.concatenate((video_trials, picture_trials), axis=0)
 # labels = np.concatenate((video_labels, picture_labels), axis=0)
 # print("\t\tShape:\n\t\t", video_trials.shape)
@@ -201,42 +210,69 @@ class DatasetRepeater(Dataset):
 # print("Data loaded.")
 
 # load data, create dataset/dataloader objects # TODO: switch to above and use both datasets when good params are found
-print("Loading data...")
-data = np.load('data/extracted_features_video.npz', mmap_mode='r')
-print("\tFile opened.")
-trials = data['trials']
-print("\tTrials loaded.")
-print("\t\tShape:\n\t\t", trials.shape)
-labels = data['labels']
-print("\tLabels loaded.")
-print("Data loaded.")
+# print("Loading data...")
+# data = np.load('data/extracted_features_video.npz', mmap_mode='r')
+# print("\tFile opened.")
+# trials = data['trials']
+# print("\tTrials loaded.")
+# print("\t\tShape:\n\t\t", trials.shape)
+# labels = data['labels']
+# print("\tLabels loaded.")
+# print("Data loaded.")
 
 # set up stratified 10-fold cross-validation
 kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
 fold_metrics = []
 epoch_loss_records = []
 fold_idx = 1
-for train_idx, test_idx in kf.split(trials, labels):
+for train_idx, test_idx in kf.split(np.zeros(len(combined_labels)), combined_labels):
+    wandb.init(
+    project="emotion-recognition",
+    name=f"{VIT_FRAMES/128}sec_{LEARNING_RATE:.1e}lr",
+    config={
+        "batch_size": BATCH_SIZE,
+        "num_epochs": NUM_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "weight_decay": WEIGHT_DECAY,
+        "gradient_clip": GRADIENT_CLIP,
+        "vit_dim": VIT_DIM,
+        "vit_depth": VIT_DEPTH,
+        "vit_heads": VIT_HEADS,
+        "vit_mlp_dim": VIT_MLP_DIM,
+        "vit_dropout": VIT_DROPOUT,
+        "vit_emb_dropout": VIT_EMB_DROPOUT,
+        "vit_pool": VIT_POOL,
+        "vit_image_patch": VIT_IMAGE_PATCH,
+        "vit_frame_patch": VIT_FRAME_PATCH,
+        "snr": SNR,
+        "rep_factor": REP_FACTOR,
+        "apply_noise_prob": APPLY_NOISE_PROB
+    }
+)
     print("============")
     print(f"|| Fold {fold_idx} ||")
     print("============")
-    # get class weights for weighted loss function
-    train_labels = labels[train_idx]
-    class_weights = compute_class_weight('balanced', classes=np.unique(train_labels), y=train_labels)
-    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
     print("Fold class distribution:")
-    print("  Training: ", np.bincount(labels[train_idx])) 
-    print("  Testing: ", np.bincount(labels[test_idx]))
+    print("  Training: ", np.bincount(combined_labels[train_idx])) 
+    print("  Testing: ", np.bincount(combined_labels[test_idx]))
     print()
     
-    # initalize datasets w/ sampler for fold
-    train_sampler = create_weighted_sampler(labels[train_idx])
-    base_train_dataset = EEGDataset(trials[train_idx], labels[train_idx], training=True)
-    train_dataset = DatasetRepeater(base_train_dataset, rep_factor=REP_FACTOR)
-    #train_dataset = EEGDataset(trials[train_idx], labels[train_idx], training=True)
-    test_dataset = EEGDataset(trials[test_idx], labels[test_idx], training=False)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    # Use Subset to create train/test datasets for this fold
+    train_subset = Subset(combined_dataset, train_idx)
+    test_subset = Subset(combined_dataset, test_idx)
+    
+    # Optionally wrap the training subset with your DatasetRepeater
+    train_dataset = DatasetRepeater(train_subset, rep_factor=REP_FACTOR)
+    
+    # Create a weighted sampler using the training fold labels
+    train_sampler = create_weighted_sampler(combined_labels[train_idx])
+    
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=train_sampler,
+                              num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    test_loader = DataLoader(test_subset, batch_size=BATCH_SIZE, shuffle=False,
+                             num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+    print(f"Train Loader length: {len(train_loader)}")
+    print(f"Test Loader length: {len(test_loader)}")
     
     # initialize model
     vit = ViT( # vision transformer (original) parameters as suggested by Awan et al. 2024
@@ -254,6 +290,8 @@ for train_idx, test_idx in kf.split(trials, labels):
         emb_dropout=VIT_EMB_DROPOUT, # original: 0.1
         pool=VIT_POOL
     ).to(device)
+    
+    #vit = SimpleCNN(num_classes=4).to(device) # simple 3D CNN model
     
     # training hyperparameters
     loss_fn = nn.CrossEntropyLoss()
@@ -362,7 +400,7 @@ for train_idx, test_idx in kf.split(trials, labels):
                 all_targets.extend(targets.cpu().numpy())
                 correct_val += torch.sum(preds == targets).sum().item()
                 total_val += targets.size(0)
-        epoch_val_loss /= len(test_dataset)
+        epoch_val_loss /= len(test_subset)
         # val_accuracy = correct_val / total_val
         val_acc, val_prec, val_rec, val_f1, val_roc_auc = get_metrics(all_targets, all_preds)
         val_epoch_losses.append(epoch_val_loss)
@@ -370,7 +408,7 @@ for train_idx, test_idx in kf.split(trials, labels):
         print(f"\tLoss: {epoch_val_loss:.4f} | Accuracy: {val_acc:.4f} | Precision: {val_prec:.4f} | Recall: {val_rec:.4f} | F1: {val_f1:.4f} | ROC AUC: {roc_auc_str}")
         print("\t:.......................................................................................................:")
         #scheduler.step(epoch_val_loss) # update lr per epoch for reduce on plateau based on val loss 
-        scheduler.step() # or cosine annealing
+        scheduler.step() # or cosine annealing / sequential
         # if epoch < warmup_epochs:
         #     warmup_scheduler.step()
         # else:
