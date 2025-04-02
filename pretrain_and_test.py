@@ -21,7 +21,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # training hyperparameters
 BATCH_SIZE = 32
-NUM_WORKERS = 8 # set to 0 if one dataset object used for training/testing, otherwise 4
+NUM_WORKERS = 32 
 PIN_MEMORY = True
 NUM_EPOCHS = 100
 LEARNING_RATE = 3e-4
@@ -71,7 +71,7 @@ def get_metrics(y_true, y_pred, y_probs=None):
     f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
     if y_probs is not None:
         try:
-            if np.dim(y_probs) == 1:
+            if np.ndim(y_probs) == 1:
                 roc_auc = roc_auc_score(y_true, y_probs)
             else:
                 
@@ -200,6 +200,7 @@ for epoch in range(NUM_EPOCHS):
     total_val = 0
     all_preds = []
     all_targets = []
+    all_probs = []
     with torch.no_grad():
         for inputs, targets in test_loader:
             inputs, targets = inputs.to(device), targets.to(device)
@@ -207,19 +208,21 @@ for epoch in range(NUM_EPOCHS):
                 outputs = vit(inputs)
                 loss_val = loss_fn(outputs, targets)
             epoch_val_loss += loss_val.item() * inputs.size(0)
+            probs = torch.softmax(outputs, dim=1)
             _, preds = torch.max(outputs, dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(targets.cpu().numpy())
+            all_probs.extend(probs.cpu().numpy())
             correct_val += torch.sum(preds == targets).sum().item()
             total_val += targets.size(0)
     # get and print metrics from validation
     epoch_val_loss /= total_val
     val_epoch_losses.append(epoch_val_loss)
-    val_acc, val_prec, val_rec, val_f1, val_roc_auc = get_metrics(all_targets, all_preds)
+    val_acc, val_prec, val_rec, val_f1, val_roc_auc = get_metrics(all_targets, all_preds, all_probs)
     roc_auc_str = f"{val_roc_auc:.4f}" if val_roc_auc is not None else "N/A"
     print(f"\tLoss: {epoch_val_loss:.4f} | Accuracy: {val_acc:.4f} | Precision: {val_prec:.4f} | Recall: {val_rec:.4f} | F1: {val_f1:.4f} | ROC AUC: {roc_auc_str}")
     print("\t:.......................................................................................................:\n")
-wandb.log({
+    wandb.log({
             "epoch": epoch + 1,
             "train_loss": epoch_train_loss,
             "val_loss": epoch_val_loss,
