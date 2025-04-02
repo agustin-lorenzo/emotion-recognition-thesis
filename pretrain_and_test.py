@@ -24,18 +24,18 @@ BATCH_SIZE = 32
 NUM_WORKERS = 32 
 PIN_MEMORY = True
 NUM_EPOCHS = 100
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 5e-5 # 2.5e-5
 WEIGHT_DECAY = 0.01 # original weight decay: 0.01
-MAX_NORM = 5.0 # max gradient norm allowed
+MAX_NORM = 1.0 # max gradient norm allowed
 
 # vit model parameters
 VIT_IMAGE_PATCH = 16
 VIT_FRAME_PATCH = 80
 VIT_FRAMES = 640 # indicates current clip length being used
-VIT_DIM = 768
-VIT_DEPTH = 16
-VIT_HEADS = 16
-VIT_MLP_DIM = 1024
+VIT_DIM = 512
+VIT_DEPTH = 6
+VIT_HEADS = 6
+VIT_MLP_DIM = 768
 VIT_DROPOUT = 0.2
 VIT_EMB_DROPOUT = 0.1
 VIT_POOL = 'mean'
@@ -140,13 +140,13 @@ print(f"Training set size: {len(train_dataset)} samples")
 
 
 loss_fn = nn.CrossEntropyLoss() # cross entropy is appropriate for classification
-optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=0.01)
+optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 scaler = torch.cuda.amp.GradScaler()
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer, 
     max_lr=LEARNING_RATE,
     total_steps=len(train_loader)*NUM_EPOCHS,
-    pct_start=0.3
+    pct_start=0.1
 )
 
 # record per-epoch train/validation losses
