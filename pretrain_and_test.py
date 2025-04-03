@@ -27,6 +27,7 @@ NUM_EPOCHS = 100
 LEARNING_RATE = 5e-5 # 2.5e-5
 WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 MAX_NORM = 1.0 # max gradient norm allowed
+PCT_START = 0.2 # proportion of epoch spent warming up to max lr
 
 # vit model parameters
 VIT_IMAGE_PATCH = 16
@@ -37,7 +38,7 @@ VIT_DEPTH = 6
 VIT_HEADS = 6
 VIT_MLP_DIM = 768
 VIT_DROPOUT = 0.2
-VIT_EMB_DROPOUT = 0.1
+VIT_EMB_DROPOUT = 0.2
 VIT_POOL = 'mean'
 
 wandb.init(
@@ -146,7 +147,8 @@ scheduler = torch.optim.lr_scheduler.OneCycleLR(
     optimizer, 
     max_lr=LEARNING_RATE,
     total_steps=len(train_loader)*NUM_EPOCHS,
-    pct_start=0.1
+    pct_start=PCT_START,
+    div_factor=10
 )
 
 # record per-epoch train/validation losses
@@ -294,6 +296,35 @@ wandb.log({
     "arousal_f1": arousal_f1,
     "arousal_roc_auc": arousal_roc_auc
 })
+
+print("Metrics recorded.")
+
+# print overall metrics
+print("Overall Metrics:")
+print(f"  Accuracy:          {overall_accuracy:.4f}")
+print(f"  Precision:         {overall_precision:.4f}")
+print(f"  Recall:            {overall_recall:.4f}")
+print(f"  F1 Score:          {overall_f1:.4f}")
+overall_roc_auc = f"{overall_roc_auc:.4f}" if overall_roc_auc is not None else "N/A"
+print(f"  ROC AUC:           {overall_roc_auc}")
+
+# print valence metrics
+print("\nValence Metrics:")
+print(f"  Accuracy:          {valence_accuracy:.4f}")
+print(f"  Precision:         {valence_precision:.4f}")
+print(f"  Recall:            {valence_recall:.4f}")
+print(f"  F1 Score:          {valence_f1:.4f}")
+valence_roc_auc = f"{valence_roc_auc:.4f}" if valence_roc_auc is not None else "N/A"
+print(f"  ROC AUC:           {valence_roc_auc}")
+
+# print arousal metrics
+print("\nArousal Metrics:")
+print(f"  Accuracy:          {arousal_accuracy:.4f}")
+print(f"  Precision:         {arousal_precision:.4f}")
+print(f"  Recall:            {arousal_recall:.4f}")
+print(f"  F1 Score:          {arousal_f1:.4f}")
+arousal_roc_auc = f"{arousal_roc_auc:.4f}" if arousal_roc_auc is not None else "N/A"
+print(f"  ROC AUC:           {arousal_roc_auc}")
 
 # save model
 torch.save(vit.state_dict(), f"models/pretrained_and_tested.pth")
