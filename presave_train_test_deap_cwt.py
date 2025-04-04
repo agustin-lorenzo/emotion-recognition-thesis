@@ -130,16 +130,22 @@ for subject in range(32):
                         noisy_frame = add_gaussian_noise(frame, SNR)
                         augmented_sample.append(noisy_frame)
                     augmented_sample = np.array(augmented_sample, dtype=np.float32)
-                    # restandardize augmented sample
-                    sample_mean = augmented_sample.mean()
-                    sample_std = augmented_sample.std()
-                    if sample_std == 0:
-                        sample_std = 1
-                    augmented_sample = (augmented_sample - sample_mean) / sample_std
-                    # renormalize augmented sample
-                    sample_min = augmented_sample.min()
-                    sample_max = augmented_sample.max()
-                    augmented_sample = (augmented_sample - sample_min) / (sample_max - sample_min)
+                    # # restandardize augmented sample
+                    # sample_mean = augmented_sample.mean()
+                    # sample_std = augmented_sample.std()
+                    # if sample_std == 0:
+                    #     sample_std = 1
+                    # augmented_sample = (augmented_sample - sample_mean) / sample_std
+                    # # renormalize augmented sample
+                    # sample_min = augmented_sample.min()
+                    # sample_max = augmented_sample.max()
+                    # augmented_sample = (augmented_sample - sample_min) / (sample_max - sample_min)
+                    
+                    # redo energy normalization for augmented sample
+                    total_energy = np.sum(augmented_sample)
+                    if total_energy == 0:
+                        total_energy = 1
+                    augmented_sample = augmented_sample / total_energy
                     # add the augmented sample
                     train_samples.resize(train_count + 1, axis=0)
                     train_samples[train_count] = augmented_sample

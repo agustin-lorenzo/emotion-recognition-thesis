@@ -24,21 +24,21 @@ BATCH_SIZE = 32
 NUM_WORKERS = 32 
 PIN_MEMORY = True
 NUM_EPOCHS = 100
-LEARNING_RATE = 5e-5 # 2.5e-5
+LEARNING_RATE = 1e-5 # 2.5e-5
 WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 MAX_NORM = 1.0 # max gradient norm allowed
-PCT_START = 0.2 # proportion of epoch spent warming up to max lr
+PCT_START = 0.1 # proportion of epoch spent warming up to max lr
 
 # vit model parameters
 VIT_IMAGE_PATCH = 16
 VIT_FRAME_PATCH = 80
 VIT_FRAMES = 640 # indicates current clip length being used
 VIT_DIM = 512
-VIT_DEPTH = 6
-VIT_HEADS = 6
+VIT_DEPTH = 4
+VIT_HEADS = 4
 VIT_MLP_DIM = 768
-VIT_DROPOUT = 0.2
-VIT_EMB_DROPOUT = 0.2
+VIT_DROPOUT = 0.1
+VIT_EMB_DROPOUT = 0.1
 VIT_POOL = 'mean'
 
 wandb.init(
@@ -161,6 +161,9 @@ for epoch in range(NUM_EPOCHS):
     running_loss = 0.0
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=len(train_loader))
     for inputs, targets in progress_bar:
+        for inputs, labels in train_loader:
+            print(inputs.shape)  # Expected: (batch_size, channels, frames, height, width)
+            break
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
         with torch.cuda.amp.autocast():
