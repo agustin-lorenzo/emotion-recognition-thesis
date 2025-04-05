@@ -24,14 +24,14 @@ BATCH_SIZE = 32
 NUM_WORKERS = 32 
 PIN_MEMORY = True
 NUM_EPOCHS = 100
-LEARNING_RATE = 1e-5 # 2.5e-5
+LEARNING_RATE = 2.5e-5 # 2.5e-5
 WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 MAX_NORM = 1.0 # max gradient norm allowed
-PCT_START = 0.1 # proportion of epoch spent warming up to max lr
+PCT_START = 0.05 # proportion of epoch spent warming up to max lr
 
 # vit model parameters
 VIT_IMAGE_PATCH = 16
-VIT_FRAME_PATCH = 80
+VIT_FRAME_PATCH = 16
 VIT_FRAMES = 640 # indicates current clip length being used
 VIT_DIM = 512
 VIT_DEPTH = 4
@@ -112,23 +112,69 @@ class h5Dataset(Dataset):
         if self.file is not None:
             self.file.close()
 
+# -------------------------
+# CNN Model Definition FOR DEBUGGING
+# -------------------------
+class Simple3DCNN(nn.Module):
+    def __init__(self, num_classes=4):
+        super(Simple3DCNN, self).__init__()
+        # First 3D convolution block: kernel over time and spatial dims.
+        self.conv1 = nn.Conv3d(1, 8, kernel_size=(5, 3, 3), stride=(2, 1, 1), padding=(2, 1, 1))
+        self.bn1 = nn.BatchNorm3d(8)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool1 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        # Second 3D convolution block.
+        self.conv2 = nn.Conv3d(8, 16, kernel_size=(3, 3, 3), stride=1, padding=1)
+        self.bn2 = nn.BatchNorm3d(16)
+        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        
+        # Third 3D convolution block.
+        self.conv3 = nn.Conv3d(16, 32, kernel_size=(3, 3, 3), stride=1, padding=1)
+        self.bn3 = nn.BatchNorm3d(32)
+        # Adaptive average pooling to reduce output to (batch, 32, 1, 1, 1)
+        self.pool3 = nn.AdaptiveAvgPool3d((1, 1, 1))
+        
+        # Final classifier
+        self.fc = nn.Linear(32, num_classes)
+        
+    def forward(self, x):
+        # x shape: (batch, 1, frames, height, width)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.pool1(x)
+        
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.pool2(x)
+        
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.pool3(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc(x)
+        return x
 
-vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
-    image_size=32,
-    frames=VIT_FRAMES,
-    image_patch_size=VIT_IMAGE_PATCH,
-    frame_patch_size=VIT_FRAME_PATCH,
-    num_classes=4,
-    dim=VIT_DIM,
-    depth=VIT_DEPTH,
-    heads=VIT_HEADS,
-    mlp_dim=VIT_MLP_DIM,
-    channels=1,
-    dropout=VIT_DROPOUT,
-    emb_dropout=VIT_EMB_DROPOUT,
-    pool=VIT_POOL,
-).to(device)
+# vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
+#     image_size=32,
+#     frames=VIT_FRAMES,
+#     image_patch_size=VIT_IMAGE_PATCH,
+#     frame_patch_size=VIT_FRAME_PATCH,
+#     num_classes=4,
+#     dim=VIT_DIM,
+#     depth=VIT_DEPTH,
+#     heads=VIT_HEADS,
+#     mlp_dim=VIT_MLP_DIM,
+#     channels=1,
+#     dropout=VIT_DROPOUT,
+#     emb_dropout=VIT_EMB_DROPOUT,
+#     pool=VIT_POOL,
+# ).to(device)
 
+vit = Simple3DCNN(num_classes=4).to(device)
 
 # creating datasets/dataloaders
 print("Loading training data...")
@@ -161,9 +207,6 @@ for epoch in range(NUM_EPOCHS):
     running_loss = 0.0
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=len(train_loader))
     for inputs, targets in progress_bar:
-        for inputs, labels in train_loader:
-            print(inputs.shape)  # Expected: (batch_size, channels, frames, height, width)
-            break
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
         with torch.cuda.amp.autocast():
