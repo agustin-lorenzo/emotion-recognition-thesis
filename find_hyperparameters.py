@@ -62,16 +62,16 @@ def train_model(config, checkpoint_dir=None):
         image_size=32,
         frames=640,
         image_patch_size=16,
-        frame_patch_size=80,
+        frame_patch_size=16,
         num_classes=4,
-        dim=int(config["vit_dim"]),
-        depth=int(config["vit_depth"]),
-        heads=int(config["vit_heads"]),
-        mlp_dim=int(config["vit_mlp_dim_factor"]) * int(config["vit_dim"]),
+        dim=512,
+        depth=4,
+        heads=4,
+        mlp_dim=768,
         channels=1,
-        dropout=config["vit_dropout"],
-        emb_dropout=config["vit_emb_dropout"],
-        pool=config["vit_pool"]
+        dropout=0.2,
+        emb_dropout=0.2,
+        pool='mean'
     ).to(device)
     
     loss_fn = nn.CrossEntropyLoss()
@@ -129,17 +129,10 @@ def train_model(config, checkpoint_dir=None):
 
 # parameters space to be searched by ray
 config = {
-    "learning_rate": tune.loguniform(1e-5, 1e-4),
+    "learning_rate": tune.loguniform(1e-5, 3e-4),
     "weight_decay": tune.uniform(0.0, 0.1),
     "max_norm": tune.uniform(0.5, 5.0),
     "pct_start": tune.uniform(0.05, 0.3),
-    "vit_dim": tune.choice([512, 768, 1024]),
-    "vit_depth": tune.choice([4, 6, 8, 12]),
-    "vit_heads": tune.choice([4, 8, 16]),
-    "vit_mlp_dim_factor": tune.choice([2, 4]),
-    "vit_dropout": tune.uniform(0.1, 0.5),
-    "vit_emb_dropout": tune.uniform(0.1, 0.3),
-    "vit_pool": tune.choice(['mean', 'cls']),
     "epochs": 10  # For tuning, run for 10 epochs
 }
 
@@ -152,13 +145,6 @@ pbt = PopulationBasedTraining(
         "weight_decay": tune.uniform(0.0, 0.1),
         "max_norm": tune.uniform(0.5, 5.0),
         "pct_start": tune.uniform(0.05, 0.3),
-        "vit_dim": [512, 768, 1024],
-        "vit_depth": [4, 6, 8, 12],
-        "vit_heads": [4, 8, 16],
-        "vit_mlp_dim_factor": [2, 4],
-        "vit_dropout": tune.uniform(0.1, 0.5),
-        "vit_emb_dropout": tune.uniform(0.1, 0.3),
-        "vit_pool": ["mean", "cls"]
     }
 )
 
@@ -168,7 +154,7 @@ result = tune.run(
     train_model,
     resources_per_trial={"cpu": 8, "gpu": 1},
     config=config,
-    num_samples=10,
+    num_samples=15,
     scheduler=pbt,
     progress_reporter=reporter,
     metric="loss", # optimize by minimizing loss
