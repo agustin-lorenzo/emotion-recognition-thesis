@@ -9,6 +9,9 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 import subprocess
 import gc
+import os
+
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
 
 # initialize constant variables
 SNR = 5                # signal-to-noise ratio
@@ -113,7 +116,6 @@ for participant in participants:
     signal_cols = [str(i) for i in range(1, 257)]
     for channel, (_, row) in enumerate(rep_trial.iterrows()):
         signal = row[signal_cols].to_numpy()
-        # Compute noise parameters based on the representative signal's power
         signal_power = np.mean(signal ** 2)
         noise_power = signal_power / (10 ** (SNR / 10))
         noise_std = math.sqrt(noise_power)
@@ -148,19 +150,18 @@ for train_idx, test_idx in skf.split(np.zeros(len(labels)), labels):
             train_idx_final.append(i)
     train_idx = train_idx_final
     
-    print(f"\nProcessing fold {fold}...")
-    # Compute class weights from the training trials only.
+    print(f"\nprocessing fold {fold}...")
+    # get class weights from training data to avoid leakage from test data
     train_labels = [trials_list[i][1] for i in train_idx]
     classes = np.unique(train_labels)
     class_weights = compute_class_weight(class_weight='balanced',
                                          classes=classes,
                                          y=train_labels)
-    # Save the computed class weights to a file (e.g., as a numpy array)
     weights_file = os.path.abspath(f"data/current_class_weights.npy") # save to "current" file so that training script always reads at same location
     np.save(weights_file, class_weights)
     weights_file = os.path.abspath(f"data/class_weights_fold{fold}.npy") # save fold's weights for record keeping
     np.save(weights_file, class_weights)
-    print(f"Saved class weights for fold {fold} to {weights_file}")
+    print(f"saved class weights for fold {fold} to {weights_file}")
     
     # creating h5 files to avoid keeping all data in memory at once
     train_file_path = os.path.abspath("data/private_train_data.h5")
@@ -193,6 +194,7 @@ for train_idx, test_idx in skf.split(np.zeros(len(labels)), labels):
     )
     
     train_count = 0
+    val_count = 0
     test_count = 0
     
     # get cwt data from training split and add augmented samples
@@ -209,9 +211,16 @@ for train_idx, test_idx in skf.split(np.zeros(len(labels)), labels):
             augmented_sample = get_sample(trial_rows, augmentation=True, noise_vectors=noise_vectors)
             add_to_h5(train_samples, train_labels, train_count, augmented_sample, cls)
             train_count += 1
-            print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')
+            print(f"\tTrain samples so far: {train_count}, Val samples so far: {val_count}, Test samples so far: {test_count}", end='\r')
     
-    print("\nTraining samples augmented and saved.")
+    print("\ntraining samples augmented and saved.")
+    # get cwt data from val split with no augmentation
+    for idx in val_idx:
+        trial_rows, cls = trials_list[idx]
+        sample = get_sample(trial_rows, augmentation=False)
+        add_to_h5(val_samples, val_labels, val_count, sample, cls)
+        val_count += 1
+        print(f"\tTrain samples so far: {train_count}, Val samples so far: {val_count}, Test samples so far: {test_count}", end='\r')
     
     # get cwt data from test split with no augmentation
     for idx in test_idx:
@@ -219,7 +228,7 @@ for train_idx, test_idx in skf.split(np.zeros(len(labels)), labels):
         sample = get_sample(trial_rows, augmentation=False)
         add_to_h5(test_samples, test_labels, test_count, sample, cls)
         test_count += 1
-        print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r') 
+        print(f"\tTrain samples so far: {train_count}, Val samples so far: {val_count}, Test samples so far: {test_count}", end='\r')
     
     train_file.close()
     test_file.close()
@@ -227,7 +236,7 @@ for train_idx, test_idx in skf.split(np.zeros(len(labels)), labels):
     print(f"Fold {fold} done: {train_count} training samples, {test_count} testing samples.")
     # run training script with current fold's datasets
     print(f"Starting training for fold {fold}...")
-    subprocess.run(["python", "pretrain_and_test.py"])
+    subprocess.run(["python", "-u", "pretrain_and_test.py"])
     
     # delete current fold's datasets
     os.remove(train_file_path)

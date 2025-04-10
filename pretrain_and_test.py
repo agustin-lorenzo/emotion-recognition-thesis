@@ -13,8 +13,9 @@ import gc
 import warnings
 import h5py
 import wandb
+import random
 from tqdm import tqdm
-
+from run_k_folds import add_gaussian_noise
 
 warnings.filterwarnings("ignore")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,6 +30,7 @@ WEIGHT_DECAY = 0.01 # original weight decay: 0.01
 MAX_NORM = 0.5 # max gradient norm allowed
 PCT_START = 0.1 # proportion of epoch spent warming up to max lr
 DIV_FACTOR = 10
+NOISE_PROB = 0.1 # probability that a sample gets extra gaussian noise when training
 
 # vit model parameters
 VIT_IMAGE_PATCH = 16
@@ -36,8 +38,8 @@ VIT_FRAME_PATCH = 8
 VIT_NUM_CLASSES = 3
 VIT_FRAMES = 64 # indicates current clip length being used
 VIT_DIM = 512
-VIT_DEPTH = 4
-VIT_HEADS = 4
+VIT_DEPTH = 6
+VIT_HEADS = 8
 VIT_MLP_DIM = 768
 VIT_DROPOUT = 0.3
 VIT_EMB_DROPOUT = 0.2
@@ -88,7 +90,8 @@ def get_metrics(y_true, y_pred, y_probs=None):
 
 # dataset object for reading from h5 files as needed
 class h5Dataset(Dataset):
-    def __init__(self, file_path):
+    def __init__(self, file_path, training=False):
+        self.training = training
         self.file_path = file_path
         # just get metadata when oopening
         with h5py.File(self.file_path, 'r') as f:
@@ -109,14 +112,19 @@ class h5Dataset(Dataset):
     def __getitem__(self, index):
         self._open_file()
         sample = self._samples[index]
-        sample = np.expand_dims(sample, axis=0)  # shape: (1, frames, height, width)
+        sample = np.expand_dims(sample, axis=0) # shape: (1, frames, height, width)
+        sample = np.repeat(sample, 3, axis=0)   # shape: (3, frames, height, width) for pseudo-rgb
         sample_tensor = torch.tensor(sample, dtype=torch.float32)
-        # sample_tensor = sample_tensor / 255.0
+        sample_tensor = sample_tensor / 255.0
         mean = sample_tensor.mean()
         std = sample_tensor.std()
         epsilon = 1e-6
         sample_tensor = (sample_tensor - mean) / (std + epsilon)
-        
+        if self.training and random.random() < NOISE_PROB:
+            # add extra noise to sample if training
+            sample_np = sample_tensor.numpy()
+            noisy_sample = add_gaussian_noise(sample_np, snr_db=6)
+            sample_tensor = torch.tensor(noisy_sample, dtype=torch.float32)
         label = self._labels[index]
         label = torch.tensor(label, dtype=torch.long)
         
@@ -151,7 +159,7 @@ vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
     depth=VIT_DEPTH,
     heads=VIT_HEADS,
     mlp_dim=VIT_MLP_DIM,
-    channels=1,
+    channels=3,
     dropout=VIT_DROPOUT,
     emb_dropout=VIT_EMB_DROPOUT,
     pool=VIT_POOL,
@@ -159,43 +167,19 @@ vit = ViT( # vision transformer parameters as suggested by Awan et al. 2024
 
 # creating datasets/dataloaders
 print("Loading training data...")
-train_dataset = h5Dataset("data/private_train_data.h5")
+train_dataset = h5Dataset("data/private_train_data.h5", training=True)
+val_dataset = h5Dataset("data/private_val_data.h5")
 test_dataset = h5Dataset("data/private_test_data.h5")
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 print("Training data initialized.")
 print(f"Training set size: {len(train_dataset)} samples")
-# create validation set from test split # TODO: Fix this to take from (unagumented) training set instead
-test_size = len(test_dataset)
-val_size = test_size // 2
-new_test_size = test_size - val_size
-val_dataset, new_test_dataset = random_split(
-    test_dataset,
-    [val_size, new_test_size],
-    generator=torch.Generator().manual_seed(42)
-)
 
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY)
 # get class weights
-# Assume train_dataset is your h5Dataset instance for training
-# Extract all labels from the train dataset
-# train_labels = [train_dataset[i][1].item() for i in range(len(train_dataset))]
-# classes = np.unique(train_labels)
-
-# # Compute weights using scikit-learn's utility; the 'balanced' mode gives weights
-# # proportional to inverse frequency.
-# class_weights = compute_class_weight(class_weight='balanced',
-#                                      classes=classes,
-#                                      y=train_labels)
-
-# # Convert to a torch tensor and move it to the proper device
-# class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
-# print("Computed class weights.")
-# print("\tWeights: ", class_weights)
-# weights = np.load("data/current_class_weights.npy")  # replace X with the fold number
-# weights = torch.tensor(weights, dtype=torch.float32).to(device)
-# loss_fn = nn.CrossEntropyLoss(weights) # cross entropy is appropriate for classification
-loss_fn = nn.CrossEntropyLoss() # cross entropy is appropriate for classification
+weights = np.load("data/current_class_weights.npy")  # replace X with the fold number
+weights = torch.tensor(weights, dtype=torch.float32).to(device)
+loss_fn = nn.CrossEntropyLoss(weights) # cross entropy is appropriate for classification
 optimizer = optim.AdamW(vit.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 scaler = torch.cuda.amp.GradScaler()
 scheduler = torch.optim.lr_scheduler.OneCycleLR(
