@@ -1,90 +1,70 @@
 import numpy as np
 import torch
-import random
-from torch.utils.data import Dataset
-import h5py
-from run_k_folds import add_gaussian_noise
+from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from transformers import VivitForVideoClassification, VivitImageProcessor, VivitConfig, Trainer, TrainingArguments, EarlyStoppingCallback
+import torchvision.transforms.v2 as transforms
 
-from transformers import VivitForVideoClassification, Trainer, TrainingArguments
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BATCH_SIZE = 32
-NUM_EPOCHS = 50
+NUM_WORKERS = 16
+NUM_EPOCHS = 20
+LEARNING_RATE = 5e-5
+WEIGHT_DECAY = 0.01
 NOISE_PROB = 0.0
+TRAIN_PROB = 0.8
+MODEL_NAME = "google/vivit-b-16x2-kinetics400"
+NUM_CLASSES = 3
 
-# dataset object for reading from h5 files as needed
-class h5Dataset(Dataset):
-    def __init__(self, file_path, training=False):
-        self.training = training
-        self.file_path = file_path
-        # just get metadata when oopening
-        with h5py.File(self.file_path, 'r') as f:
-            self.num_samples = f['samples'].shape[0]
-        self._file = None
-        self._samples = None
-        self._labels = None
+image_processor = VivitImageProcessor.from_pretrained(MODEL_NAME)
+image_size = (224, 224)
+image_mean = image_processor.image_mean
+image_std = image_processor.image_std
+preprocess_transform = transforms.Compose([
+    transforms.Lambda(lambda x: x.unsqueeze(1)),
+    transforms.Lambda(lambda x: x.repeat(1, 3, 1, 1)),
+    transforms.Resize(size=image_size, antialias=True),
+    transforms.Normalize(mean=image_mean, std=image_std),
+])
+
+class CWTDataset(Dataset):
+    def __init__(self, samples, labels, transform=None):
+        self.samples = samples
+        self.labels = labels
+        self.transform = transform
         
     def __len__(self):
-        return self.num_samples
-    
-    def _open_file(self):
-        if self._file is None:
-            self._file = h5py.File(self.file_path, 'r')
-            self._samples = self._file['samples']
-            self._labels = self._file['labels']
-    
-    def __getitem__(self, index):
-        self._open_file()
-        sample = self._samples[index]
-        sample = np.expand_dims(sample, axis=0) # shape: (1, frames, height, width)
-        sample = np.repeat(sample, 3, axis=0)   # shape: (3, frames, height, width) for pseudo-rgb
-        sample_tensor = torch.tensor(sample, dtype=torch.float32)
-        sample_tensor = sample_tensor / 255.0
-        mean = sample_tensor.mean()
-        std = sample_tensor.std()
-        epsilon = 1e-6
-        sample_tensor = (sample_tensor - mean) / (std + epsilon)
-        if self.training and random.random() < NOISE_PROB:
-            # add extra noise to sample if training
-            sample_np = sample_tensor.numpy()
-            noisy_sample = add_gaussian_noise(sample_np, snr_db=6)
-            sample_tensor = torch.tensor(noisy_sample, dtype=torch.float32)
-        label = self._labels[index]
-        label = torch.tensor(label, dtype=torch.long)
-        
-        return sample_tensor, label
-    
-    def close(self):
-        if self._file is not None:
-            self._file.close()
-            self._file = None
-            self._samples = None
-            self._labels = None
-    
-    def __del__(self):
-        # As a backup, also close in the destructor
-        self.close()
-        
-    def __enter__(self):
-        self._open_file()
-        return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        return len(self.samples)
 
-class ViViTWrapper(torch.nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-    
-    def forward(self, **inputs):
-        return self.model(**inputs, interpolate_pos_encoding=True)
+    def __getitem__(self, idx):
+        clip = torch.tensor(self.samples[idx], dtype=torch.float32)
+        if self.transform:
+            clip = self.transform(clip)
+        label = torch.tensor(self.labels[idx], dtype=torch.long)
+        return {"pixel_values": clip, "labels": label}
 
-base_model = VivitForVideoClassification.from_pretrained("google/vivit-b-16x2-kinetics400")
-base_model.config.num_labels = 3
-base_model.classifier = torch.nn.Linear(base_model.config.hidden_size, 3)
-model = ViViTWrapper(base_model)
+data = np.load("all_deap_cwt_data.npz")
+all_samples = data['samples']
+all_labels = data['labels']
 
+train_samples, test_samples, train_labels, test_labels = train_test_split(all_samples, all_labels, test_size=0.2, random_state=42, stratify=all_labels)
+
+train_dataset = CWTDataset(train_samples, train_labels, preprocess_transform)
+eval_dataset = CWTDataset(test_samples, test_labels, preprocess_transform)
+
+# load model and freeze backbone to only train mlp head
+model = VivitForVideoClassification.from_pretrained(MODEL_NAME)
+for param in model.vivit.parameters():
+    param.requires_grad = False
+# adjust classifier head for 3 classes
+num_features = model.classifier.in_features 
+model.classifier = torch.nn.Linear(num_features, 3) 
+model.config.num_labels = 3
+model.num_labels = 3
+model.to(device)
+#model = torch.compile(model, mode="reduce-overhead") # compile model to speed up training
 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
@@ -100,23 +80,35 @@ def compute_metrics(eval_pred):
     return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "roc_auc": roc}
 
 training_args = TrainingArguments(
-    ouput_dir="models",
+    output_dir="models/vivit_finetuned_deap",
     eval_strategy="epoch",
+    per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
     per_gpu_eval_batch_size=BATCH_SIZE,
+    learning_rate=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY,
     num_train_epochs=NUM_EPOCHS,
-    logging_steps=NUM_EPOCHS,
+    logging_steps=10,
+    fp16=torch.cuda.is_available(),
+    remove_unused_columns=False,
+    load_best_model_at_end=True,
+    metric_for_best_model="accuracy",
     save_strategy="epoch",
     push_to_hub=False
 )
 
 trainer = Trainer(
     model=model,
-    training_args=training_args,
-    train_dataset=train_datset,
-    eval_dataset=test_dataset,
-    compute_metrics=compute_metrics  
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    compute_metrics=compute_metrics,
+    callbacks=[EarlyStoppingCallback(early_stopping_patience=5)]
 )
 
 trainer.train()
-
+final_model_path = "models/vivit_finetuned_deap/best_deap_finetuned"
+trainer.save_model(final_model_path)
+image_processor.save_pretrained(final_model_path)
+eval_results = trainer.evaluate(eval_dataset)
+print("Test results:\n", eval_results)
