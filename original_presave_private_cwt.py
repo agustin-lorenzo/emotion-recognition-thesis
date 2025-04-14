@@ -7,8 +7,8 @@ import random
 
 # initialize constant variables
 SNR = 5                # signal-to-noise ratio
-REP_FACTOR = 10         # total samples per original (1 original + REP_FACTOR-1 augmented copies)
-WINDOW_SIZE = 2 * 128  # 5-second samples at 128 Hz (640 frames per sample)
+REP_FACTOR = 10        # total samples per original (1 original + REP_FACTOR-1 augmented copies)
+WINDOW_SIZE = 64       # 2-second samples at 128 Hz -> 256 frames -> averaged to 64 frames
 TRAIN_PROB = 0.8       # train/test split probability
 
 # paramaters for calculating cwt, not to be changed
@@ -29,7 +29,7 @@ def add_to_h5(sample_list, label_list, count, sample, cls):
     sample_list.resize(count + 1, axis=0)
     sample_list[count] = sample
     label_list.resize(count + 1, axis=0)
-    label_list[count] = int(cls)
+    label_list[count] = np.uint8(cls)
 
 # helper function for normalizing a sample, sample has to be list of frames
 def normalize_sample(all_frames):
@@ -39,6 +39,41 @@ def normalize_sample(all_frames):
         total_energy = 1
     sample = sample / total_energy
     return sample
+
+# helper function for getting sample video from 128 channel .csv rows for one trial
+def get_sample(trial_rows, augmentation=False, normalize=False):
+    total_cwt = np.zeros((128 * fn, 256)) # image containing cwt values for all channels, change width depending on video/picture data
+    # iterate through channels to get 2D CWT image
+    for channel, (_, row) in enumerate(trial_rows.iterrows()):
+        signal_cols = [str(i) for i in range(1, 257)] # change width depending on wideo/piture data
+        signal = row[signal_cols].to_numpy()
+        if augmentation:
+            signal = add_gaussian_noise(signal)
+        _, current_cwt = fcwt.cwt(signal, fs, f0, f1, fn)
+        start = channel * fn
+        end = (channel + 1) * fn
+        total_cwt[start:end, :] = abs(current_cwt) ** 2 # square coefficients to get energy
+    
+    # reshape so that time dimension is split into segments and average over each segment
+    # averages cwt data from 256 frames down to 64 frames
+    num_frames = 256 // 4
+    total_cwt = total_cwt.reshape(128 * fn, num_frames, 4).mean(axis=2)    
+        
+    # create list of frames
+    all_frames = []
+    for time_point in range(num_frames):
+        frame = np.zeros((128, 128))
+        for channel in range(128):
+            start = channel * fn
+            end = (channel + 1) * fn
+            frame[:, channel] = total_cwt[start:end, time_point]
+        all_frames.append(frame) # append 1-channel frame, no rgb
+    # normalize and return sample
+    if normalize: 
+        return normalize_sample(all_frames)
+    else:
+        return np.array(all_frames, dtype=np.float32)
+    
 
 print("opening dataset...")
 df = pd.read_csv('data/preprocessed_picture.csv')
@@ -64,9 +99,6 @@ test_labels = test_file.create_dataset(
     "labels", shape=(0,), maxshape=(None,), dtype=np.uint8, chunks=True
 )
 
-#trials = [] # list of cwt videos for all trials
-#labels = [] # classes corresponding to all trials
-
 train_count = 0
 test_count = 0
 
@@ -76,95 +108,32 @@ for participant in df['par_id'].unique():
     
     # iterate through trials
     for stimulus in participant_rows['Stim_name'].unique():
-        trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
-        cls = trial_rows.iloc[0]["class"]
-        
-        total_cwt = np.zeros((128 * fn, 256)) # image containing cwt values for all channels, change width depending on video/picture data
-        # iterate through channels
-        for channel, (_, row) in enumerate(trial_rows.iterrows()):
-            signal_cols = [str(i) for i in range(1, 257)] # change width depending on wideo/piture data
-            signal = row[signal_cols].to_numpy()
-            _, current_cwt = fcwt.cwt(signal, fs, f0, f1, fn)
-            start = channel * fn
-            end = (channel + 1) * fn
-            total_cwt[start:end, :] = abs(current_cwt) ** 2 # square coefficients to get energy
-        
-        # convert 2D time sample x channel-frequency format (x, y) to 3D channel x frequency x time format (x, y, z)
-        # each 'frame' in all_frames is a 2D image showing each channel's CWT value for that time sample
-        all_frames = []
-        for sample in range(256):
-            frame = np.zeros((128, 128))
-            for channel in range(128):
-                start = channel * fn
-                end = (channel + 1) * fn
-                frame[:, channel] = total_cwt[start:end, sample]
-            
-            #norm_frame = (frame - frame.min()) / (frame.max() - frame.min()) # normalize frame
-            #scaled_frame = (norm_frame * 255).astype(np.uint8) # scale to 255 for video
-            all_frames.append(frame) # append 1-channel frame, no rgb
-            
-        # split trial into x-second samples as suggested in Arjun et al. 2021, only necessary for video data
-        # for i in range(0, 1280, WINDOW_SIZE): 
-        #     if i + WINDOW_SIZE > 1280:
-        #         break
-        #     clip = all_frames[i:i+WINDOW_SIZE]
-        #     trials.append(np.array(clip, dtype=np.uint8)) # append on this level for clipping
-        #     labels.append(int(cls))
-        
-        # normalize sample, ensure total energy sums to 1
-        sample = normalize_sample(all_frames)
-        
-        # randomly decide if the sample goes to the training set with train_prob% chance
-        if random.random() < TRAIN_PROB:
+        # TRAIN_PROB% chance that given trial goes to training set
+        if random.random() < TRAIN_PROB: # add original + augmented samples to training set
+            trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
+            cls = np.uint8(trial_rows.iloc[0]["class"])
+            sample = get_sample(trial_rows)
             add_to_h5(train_samples, train_labels, train_count, sample, cls)
-            # train_samples.resize(train_count + 1, axis=0)
-            # train_samples[train_count] = sample
-            # train_labels.resize(train_count + 1, axis=0)
-            # train_labels[train_count] = int(cls)
-            
-            for _ in range(REP_FACTOR - 1):
-                all_augmented_frames = []
-                for frame in sample:
-                    noisy_frame = add_gaussian_noise(frame, SNR)
-                    all_augmented_frames.append(noisy_frame)
-                # redo normalization
-                augmented_sample = normalize_sample(all_augmented_frames)
-                # add the augmented sample
+            train_count += 1
+            print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')   
+                
+            for _ in range(REP_FACTOR - 1): # augment each channel REP_FACTOR number of times
+                #  iterate through channels again to get augmented sample
+                augmented_sample = get_sample(trial_rows, augmentation=True)
                 add_to_h5(train_samples, train_labels, train_count, augmented_sample, cls)
-                # train_samples.resize(train_count + 1, axis=0)
-                # train_samples[train_count] = augmented_sample
-                # train_labels.resize(train_count + 1, axis=0)
-                # train_labels[train_count] = int(cls)
+                train_count += 1
+                print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')   
+                
         else: # add to test set without augmentation
+            trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
+            cls = np.uint8(trial_rows.iloc[0]["class"])
+            sample = get_sample(trial_rows)
             add_to_h5(test_samples, test_labels, test_count, sample, cls)
+            test_count += 1
+            print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')
         
-    print(f"Processed subject {participant}: Train samples so far: {train_count}, Test samples so far: {test_count}", end='\r')   
-        # print(f"\tCurrent participant: {participant}\tCurrent Number of Trials: {len(trials)}", end='\r')
-        # trials.append(np.array(all_frames, dtype=np.float32)) # append on this level for no clipping
-        # labels.append(int(cls))
+    print(f"\nProcessed subject {participant}.")
+
 train_file.close()
 test_file.close()
 print("\nData saved to 'data/private_train_data.h5' and 'data/private_test_data.h5'.")
-# trials = np.array(trials, dtype=np.uint8)
-# labels = np.array(labels, dtype=np.uint8)
-# global_min = trials.min()
-# global_max = trials.max()
-# trials = (trials - global_min) / (global_max - global_min) # normalize all trials to [0, 1]
-
-        
-# print("\nsaving features...")
-# trials_array = np.stack(trials)  # shape: (num_trials, 128, 128, 128 * seconds)
-# del trials
-# gc.collect()
-
-# labels_array = np.array(labels)
-# del labels
-# gc.collect()
-
-# print("\tTrials shape:", trials.shape)  # should be (num_trials, 128, 128, 128 * seconds)
-# print("\tTrials dtype:", trials.dtype)
-
-# print("\n\tLabels shape:", labels.shape)  # should be (num_trials,)
-# print("\tLabels dtype:", labels.dtype)
-# np.savez_compressed('data/extracted_features_video.npz', trials=trials, labels=labels)
-# print("done.")

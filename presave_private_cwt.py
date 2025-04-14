@@ -1,15 +1,18 @@
-import pandas as pd
-import numpy as np
 import fcwt
-import h5py
+import numpy as np
+import pandas as pd
+import pickle
 import math
-import random
+from run_k_folds import add_gaussian_noise
 
-# initialize constant variables
-SNR = 5                # signal-to-noise ratio
-REP_FACTOR = 10        # total samples per original (1 original + REP_FACTOR-1 augmented copies)
-WINDOW_SIZE = 64       # 2-second samples at 128 Hz -> 256 frames -> averaged to 64 frames
-TRAIN_PROB = 0.8       # train/test split probability
+# initialize constants
+SNR = 5  # signal-to-noise ratio
+REP_FACTOR = 0  # number of augmented samples per original sample
+WINDOW_SIZE = 32  # 640 frames per sample
+NUM_FRAMES = 8064 // 4
+SEG_LENGTH = 64        # We expect 64 frames per 2-second segment after averaging
+DESIRED_FRAMES = 32    # We want each output clip to have 32 frames
+STRIDE = 2
 
 # paramaters for calculating cwt, not to be changed
 fs = 128 
@@ -41,7 +44,7 @@ def normalize_sample(all_frames):
     return sample
 
 # helper function for getting sample video from 128 channel .csv rows for one trial
-def get_sample(trial_rows, augmentation=False):
+def get_sample(trial_rows, augmentation=False, normalize=False):
     total_cwt = np.zeros((128 * fn, 256)) # image containing cwt values for all channels, change width depending on video/picture data
     # iterate through channels to get 2D CWT image
     for channel, (_, row) in enumerate(trial_rows.iterrows()):
@@ -69,68 +72,16 @@ def get_sample(trial_rows, augmentation=False):
             frame[:, channel] = total_cwt[start:end, time_point]
         all_frames.append(frame) # append 1-channel frame, no rgb
     # normalize and return sample
-    sample = normalize_sample(all_frames)
-    return sample
+    if normalize: 
+        return normalize_sample(all_frames)
+    else:
+        return np.array(all_frames, dtype=np.float32)
+
+all_samples = []
+all_labels = []
 
 print("opening dataset...")
 df = pd.read_csv('data/preprocessed_picture.csv')
 print("dataset opened.")
 
-# creating h5 files to avoid keeping all data in memory at once
-train_file = h5py.File("data/private_train_data.h5", "w")
-test_file = h5py.File("data/private_test_data.h5", "w")
-
-train_samples = train_file.create_dataset(
-    "samples", shape=(0, WINDOW_SIZE, 128, 128),
-    maxshape=(None, WINDOW_SIZE, 128, 128), dtype=np.float32, chunks=True
-)
-train_labels = train_file.create_dataset(
-    "labels", shape=(0,), maxshape=(None,), dtype=np.uint8, chunks=True
-)
-
-test_samples = test_file.create_dataset(
-    "samples", shape=(0, WINDOW_SIZE, 128, 128),
-    maxshape=(None, WINDOW_SIZE, 128, 128), dtype=np.float32, chunks=True
-)
-test_labels = test_file.create_dataset(
-    "labels", shape=(0,), maxshape=(None,), dtype=np.uint8, chunks=True
-)
-
-train_count = 0
-test_count = 0
-
-# iterate through participants
-for participant in df['par_id'].unique():
-    participant_rows = df[df['par_id'] == participant]
-    
-    # iterate through trials
-    for stimulus in participant_rows['Stim_name'].unique():
-        # TRAIN_PROB% chance that given trial goes to training set
-        if random.random() < TRAIN_PROB: # add original + augmented samples to training set
-            trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
-            cls = np.uint8(trial_rows.iloc[0]["class"])
-            sample = get_sample(trial_rows)
-            add_to_h5(train_samples, train_labels, train_count, sample, cls)
-            train_count += 1
-            print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')   
-                
-            for _ in range(REP_FACTOR - 1): # augment each channel REP_FACTOR number of times
-                #  iterate through channels again to get augmented sample
-                augmented_sample = get_sample(trial_rows, augmentation=True)
-                add_to_h5(train_samples, train_labels, train_count, augmented_sample, cls)
-                train_count += 1
-                print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')   
-                
-        else: # add to test set without augmentation
-            trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
-            cls = np.uint8(trial_rows.iloc[0]["class"])
-            sample = get_sample(trial_rows)
-            add_to_h5(test_samples, test_labels, test_count, sample, cls)
-            test_count += 1
-            print(f"\tTrain samples so far: {train_count}, Test samples so far: {test_count}", end='\r')
-        
-    print(f"\nProcessed subject {participant}.")
-
-train_file.close()
-test_file.close()
-print("\nData saved to 'data/private_train_data.h5' and 'data/private_test_data.h5'.")
+for participant in df['par_id'].unique(): # TODO: finish updating script for new vivit finetuning

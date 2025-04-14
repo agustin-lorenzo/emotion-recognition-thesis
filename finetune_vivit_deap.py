@@ -1,7 +1,8 @@
 import numpy as np
 import torch
+import matplotlib as plt
 from torch.utils.data import Dataset, DataLoader
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import train_test_split
 from transformers import VivitForVideoClassification, VivitImageProcessor, VivitConfig, Trainer, TrainingArguments, EarlyStoppingCallback
 import torchvision.transforms.v2 as transforms
@@ -10,13 +11,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BATCH_SIZE = 32
 NUM_WORKERS = 16
-NUM_EPOCHS = 20
+NUM_EPOCHS = 50
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 0.01
 NOISE_PROB = 0.0
 TRAIN_PROB = 0.8
 MODEL_NAME = "google/vivit-b-16x2-kinetics400"
 NUM_CLASSES = 3
+NUM_UNFROZEN_LAYERS = 2 # number of transformer layers that get unfrozen for training alongside mlp head
 
 image_processor = VivitImageProcessor.from_pretrained(MODEL_NAME)
 image_size = (224, 224)
@@ -25,7 +27,7 @@ image_std = image_processor.image_std
 preprocess_transform = transforms.Compose([
     transforms.Lambda(lambda x: x.unsqueeze(1)),
     transforms.Lambda(lambda x: x.repeat(1, 3, 1, 1)),
-    transforms.Resize(size=image_size, antialias=True),
+    transforms.Resize(size=image_size, antialias=False),
     transforms.Normalize(mean=image_mean, std=image_std),
 ])
 
@@ -58,6 +60,11 @@ eval_dataset = CWTDataset(test_samples, test_labels, preprocess_transform)
 model = VivitForVideoClassification.from_pretrained(MODEL_NAME)
 for param in model.vivit.parameters():
     param.requires_grad = False
+# unfreeze given number of transformer layers if desired
+encoder_layers = model.vivit.encoder.layer
+for i in range(NUM_UNFROZEN_LAYERS):
+    for param in encoder_layers[11-i].parameters():
+        param.requires_grad = True
 # adjust classifier head for 3 classes
 num_features = model.classifier.in_features 
 model.classifier = torch.nn.Linear(num_features, 3) 
@@ -74,13 +81,14 @@ def compute_metrics(eval_pred):
     rec = recall_score(labels, predictions, average="macro", zero_division=0)
     f1 = f1_score(labels, predictions, average="macro", zero_division=0)
     try:
-        roc = roc_auc_score(labels, logits, multi_class="ovr", average="macro")
+        probs = torch.softmax(torch.tensor(logits), dim=1).numpy()
+        roc = roc_auc_score(labels, probs, multi_class="ovr", average="macro")
     except Exception as e:
         roc = 0.0
     return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "roc_auc": roc}
 
 training_args = TrainingArguments(
-    output_dir="models/vivit_finetuned_deap",
+    output_dir=f"models/vivit_finetuned-{NUM_UNFROZEN_LAYERS}-layers_deap",
     eval_strategy="epoch",
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
@@ -88,7 +96,7 @@ training_args = TrainingArguments(
     learning_rate=LEARNING_RATE,
     weight_decay=WEIGHT_DECAY,
     num_train_epochs=NUM_EPOCHS,
-    logging_steps=10,
+    logging_steps=max(1, len(train_dataset) // (BATCH_SIZE * 4)),
     fp16=torch.cuda.is_available(),
     remove_unused_columns=False,
     load_best_model_at_end=True,
@@ -107,8 +115,18 @@ trainer = Trainer(
 )
 
 trainer.train()
-final_model_path = "models/vivit_finetuned_deap/best_deap_finetuned"
+final_model_path = f"models/vivit_finetuned-{NUM_UNFROZEN_LAYERS}-layers_deap/best_{NUM_UNFROZEN_LAYERS}-layers"
 trainer.save_model(final_model_path)
 image_processor.save_pretrained(final_model_path)
 eval_results = trainer.evaluate(eval_dataset)
 print("Test results:\n", eval_results)
+# get final confusion matrix
+predictions_output = trainer.predict(eval_dataset)
+y_pred = predictions_output.predictions.argmax(axis=-1)
+y_true = predictions_output.label_ids
+class_names = ['Unpleasant', 'Neutral', 'Pleasant']
+cm = confusion_matrix(y_true, y_pred)
+print("\nFinal Confusion Matrix:\n", cm)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+disp.plot()
+plt.savefig(f"{final_model_path}/confusion_matrix.png")
