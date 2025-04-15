@@ -27,13 +27,6 @@ def add_gaussian_noise(signal, snr_db=5):
     noise = np.random.normal(0, math.sqrt(noise_power), signal.shape)
     return signal + noise
 
-# helper function used for adding a sample to train/test .h5 files
-def add_to_h5(sample_list, label_list, count, sample, cls):
-    sample_list.resize(count + 1, axis=0)
-    sample_list[count] = sample
-    label_list.resize(count + 1, axis=0)
-    label_list[count] = np.uint8(cls)
-
 # helper function for normalizing a sample, sample has to be list of frames
 def normalize_sample(all_frames):
     sample = np.array(all_frames, dtype=np.float32)
@@ -44,44 +37,79 @@ def normalize_sample(all_frames):
     return sample
 
 # helper function for getting sample video from 128 channel .csv rows for one trial
-def get_sample(trial_rows, augmentation=False, normalize=False):
-    total_cwt = np.zeros((128 * fn, 256)) # image containing cwt values for all channels, change width depending on video/picture data
+def get_sample(trial_rows, seconds=2, augmentation=False, normalize=False):
+    time_points = 128 * seconds
+    total_cwt = np.zeros((128 * fn, time_points)) # image containing cwt values for all channels, change width depending on video/picture data
     # iterate through channels to get 2D CWT image
     for channel, (_, row) in enumerate(trial_rows.iterrows()):
-        signal_cols = [str(i) for i in range(1, 257)] # change width depending on wideo/piture data
+        signal_cols = [str(i) for i in range(1, time_points + 1)] # change width depending on wideo/piture data
         signal = row[signal_cols].to_numpy()
         if augmentation:
             signal = add_gaussian_noise(signal)
         _, current_cwt = fcwt.cwt(signal, fs, f0, f1, fn)
         start = channel * fn
         end = (channel + 1) * fn
-        total_cwt[start:end, :] = abs(current_cwt) ** 2 # square coefficients to get energy
+        total_cwt[start:end, :] = abs(current_cwt) # ** 2 # square coefficients to get energy
     
     # reshape so that time dimension is split into segments and average over each segment
     # averages cwt data from 256 frames down to 64 frames
-    num_frames = 256 // 4
+    num_frames = time_points // 4
     total_cwt = total_cwt.reshape(128 * fn, num_frames, 4).mean(axis=2)    
         
     # create list of frames
     all_frames = []
-    for time_point in range(num_frames):
+    for t in range(num_frames):
         frame = np.zeros((128, 128))
         for channel in range(128):
             start = channel * fn
             end = (channel + 1) * fn
-            frame[:, channel] = total_cwt[start:end, time_point]
+            frame[:, channel] = total_cwt[start:end, t]
         all_frames.append(frame) # append 1-channel frame, no rgb
+    # use a stride of 2 to reduce frames down to 32, expected by vivit
+    clip = all_frames[::2]
     # normalize and return sample
     if normalize: 
-        return normalize_sample(all_frames)
+        return normalize_sample(clip)
     else:
-        return np.array(all_frames, dtype=np.float32)
+        return np.array(clip, dtype=np.float32)
 
 all_samples = []
 all_labels = []
 
-print("opening dataset...")
+print("opening picture dataset...")
 df = pd.read_csv('data/preprocessed_picture.csv')
-print("dataset opened.")
+print("picture dataset opened.")
 
-for participant in df['par_id'].unique(): # TODO: finish updating script for new vivit finetuning
+for participant in df['par_id'].unique():
+    participant_rows = df[df['par_id'] == participant]
+    
+    # iterate through trials
+    for stimulus in participant_rows['Stim_name'].unique():
+        trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
+        cls = np.uint8(trial_rows.iloc[0]["class"])
+        all_samples.extend(get_sample(trial_rows))
+        all_labels.extend(cls)
+
+print("picture data processed.")
+print("\nopening video dataset...")
+df = pd.read_csv('data/preprocessed_video.csv')
+print("video dataset opened.")
+
+for participant in df['par_id'].unique():
+    participant_rows = df[df['par_id'] == participant]
+    
+    # iterate through trials
+    for stimulus in participant_rows['Stim_name'].unique():
+        trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
+        cls = np.uint8(trial_rows.iloc[0]["class"])
+        sample = get_sample(trial_rows, seconds=10)
+        clip_length = 32 # expected by vivit
+        for i in range(5):
+            start_idx = i * clip_length
+            end_idx = (i + 1) * clip_length
+            clip = sample[start_idx:end_idx] # what do I do here
+            all_samples.append(clip)
+            all_labels.append(cls)
+
+np.savez("all_private_cwt_data.npz", samples=np.array(all_samples, dtype=np.float32), labels=np.array(all_labels, dtype=np.uint8))
+print("\nData saved to all_private_cwt_data.npz")

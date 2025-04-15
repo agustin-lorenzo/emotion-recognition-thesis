@@ -95,10 +95,7 @@ for subject in range(32):
     
     all_samples.extend(subject_trials)    
     all_labels.extend(subject_labels)
-    
-    
     print(f"Processed subject {subject+1}: total samples so far = {len(all_samples)}", end='\r')
-np.savez("all_deap_cwt_data.npz",
-         samples=np.array(all_samples, dtype=np.float32),
-         labels=np.array(all_labels, dtype=np.uint8))
+    
+np.savez("all_deap_cwt_data.npz", samples=np.array(all_samples, dtype=np.float32), labels=np.array(all_labels, dtype=np.uint8))
 print("\nData saved to all_deap_cwt_data.npz")
