@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay
 from sklearn.model_selection import StratifiedKFold
+from sklearn.utils.class_weight import compute_class_weight
 from transformers import VivitForVideoClassification, VivitImageProcessor, Trainer, TrainingArguments, EarlyStoppingCallback
 import torchvision.transforms.v2 as transforms
 import csv
@@ -69,6 +70,21 @@ def compute_metrics(eval_pred):
         roc = 0.0
     return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "roc_auc": roc}
 
+# using a wraper for Huggingface's Trainer to account for class imbalance
+# uses class weights in loss function
+class WeightedTrainer(Trainer):
+    def __init__(self, class_weights, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+        loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+        loss = loss_fct(logits, labels)
+        return (loss, outputs) if return_outputs else loss
+
 image_processor = VivitImageProcessor.from_pretrained(MODEL_NAME)
 image_size = (224, 224)
 image_mean = image_processor.image_mean
@@ -111,7 +127,7 @@ with open(csv_results_path, "w", newline='') as csvfile:
     writer.writerow(header)
 
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    fold = 0
+    fold = 1
     for train_idx, test_idx in skf.split(all_samples, all_labels):
         wandb.init(
             project="emotion-recognition",
@@ -133,6 +149,10 @@ with open(csv_results_path, "w", newline='') as csvfile:
         test_samples, test_labels = all_samples[test_idx], all_labels[test_idx]
         train_dataset = CWTDataset(train_samples, train_labels, preprocess_transform)
         eval_dataset = CWTDataset(test_samples, test_labels, preprocess_transform)
+        
+        class_weights = compute_class_weight(class_weight='balanced', classes=np.arange(NUM_CLASSES), y=train_labels)
+        class_weights = torch.tensor(class_weights, dtype=torch.float32)
+        print(f"fold {fold} class weights: {class_weights}")
 
         # load model and freeze backbone to only train mlp head
         model = VivitForVideoClassification.from_pretrained(MODEL_NAME)
@@ -170,7 +190,8 @@ with open(csv_results_path, "w", newline='') as csvfile:
             report_to="wandb"
         )
 
-        trainer = Trainer(
+        trainer = WeightedTrainer(
+            class_weights=class_weights,
             model=model,
             args=training_args,
             train_dataset=train_dataset,
@@ -180,10 +201,12 @@ with open(csv_results_path, "w", newline='') as csvfile:
         )
         trainer.train()
         
-        final_model_path = f"{base_models_dir}/best_fold_{fold}" # <-- Use base_models_dir
+        final_model_path = f"{base_models_dir}/best_fold_{fold}"
         trainer.save_model(final_model_path)
         image_processor.save_pretrained(final_model_path)
         
+        fold_dir = f"{base_metrics_dir}/fold_{fold}"
+        os.makedirs(fold_dir, exist_ok=True)
         eval_results = trainer.evaluate(eval_dataset)
         acc = eval_results.get('eval_accuracy', 0.0)
         rec = eval_results.get('eval_recall', 0.0)
@@ -198,6 +221,7 @@ with open(csv_results_path, "w", newline='') as csvfile:
         all_fold_aucs.append(auc)
         all_fold_f1s.append(f1)
         row_data = [fold, f"{loss:.6f}", f"{acc:.6f}", f"{rec:.6f}", f"{pre:.6f}", f"{auc:.6f}", f"{f1:.6f}"]
+        # TODO: save metrics to .txt file in fold_dir as well
         writer.writerow(row_data)
         
         # get final confusion matrix
@@ -208,11 +232,10 @@ with open(csv_results_path, "w", newline='') as csvfile:
         cm = confusion_matrix(y_true, y_pred)
         print("\nFinal Confusion Matrix:\n", cm)
         
-        cm_fold_dir = f"{base_metrics_dir}/fold_{fold}"
-        os.makedirs(cm_fold_dir, exist_ok=True) 
+        
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
         disp.plot()
-        plt.savefig(f"{cm_fold_dir}/fold-{fold}_confusion_matix.png")
+        plt.savefig(f"{fold_dir}/fold-{fold}_confusion_matix.png")
         plt.close()
         wandb.finish()
     
@@ -227,6 +250,7 @@ std_precision = np.std(all_fold_precisions)
 mean_auc = np.mean(all_fold_aucs)
 std_auc = np.std(all_fold_aucs)
 
+# TODO: save these final metrics to base_metrics_dir as well
 print("\n--- Cross-Validation Summary ---")
 print(f"Folds: {skf.get_n_splits()}")
 print(f"Average Accuracy:  {mean_accuracy:.4f} +/- {std_accuracy:.4f}")
