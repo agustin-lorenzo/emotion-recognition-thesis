@@ -2,7 +2,7 @@ import fcwt
 import numpy as np
 import pickle
 import math
-from run_k_folds import add_gaussian_noise
+from old_scripts.run_k_folds import add_gaussian_noise
 
 # initialize constants
 SNR = 5  # signal-to-noise ratio
@@ -55,7 +55,7 @@ for subject in range(32):
 
     for trial in range(40):
         total_cwt = np.zeros((32 * fn, 8064))
-        for channel in range(32):    
+        for channel in range(32): # TODO: reorder channels by order obtained by Hilbert curve
             signal = relevant_channels[trial][channel]
             _, current_cwt = fcwt.cwt(signal, fs, f0, f1, fn)
             start = channel * fn
@@ -90,7 +90,7 @@ for subject in range(32):
                 for frame in clip:
                     noisy_frame = add_gaussian_noise(frame, SNR)
                     augmented_sample.append(noisy_frame)
-                subject_trials.append(np.array(augmented_sample, dtype=np.float32)) # TODO: normalize correctly if using augmentation later
+                subject_trials.append(np.array(augmented_sample, dtype=np.float32))
                 subject_labels.append(int(classes[trial]))
     
     all_samples.extend(subject_trials)    

@@ -1,9 +1,8 @@
 import fcwt
 import numpy as np
 import pandas as pd
-import pickle
 import math
-from run_k_folds import add_gaussian_noise
+from old_scripts.run_k_folds import add_gaussian_noise
 
 # initialize constants
 SNR = 5  # signal-to-noise ratio
@@ -41,7 +40,7 @@ def get_sample(trial_rows, seconds=2, augmentation=False, normalize=False):
     time_points = 128 * seconds
     total_cwt = np.zeros((128 * fn, time_points)) # image containing cwt values for all channels, change width depending on video/picture data
     # iterate through channels to get 2D CWT image
-    for channel, (_, row) in enumerate(trial_rows.iterrows()):
+    for channel, (_, row) in enumerate(trial_rows.iterrows()): #TODO: change order of channels to match order obtained by Hilbert curve
         signal_cols = [str(i) for i in range(1, time_points + 1)] # change width depending on wideo/piture data
         signal = row[signal_cols].to_numpy()
         if augmentation:
@@ -107,7 +106,7 @@ for participant in df['par_id'].unique():
         for i in range(5):
             start_idx = i * clip_length
             end_idx = (i + 1) * clip_length
-            clip = sample[start_idx:end_idx] # what do I do here
+            clip = sample[start_idx:end_idx]
             all_samples.append(clip)
             all_labels.append(cls)
 
