@@ -9,9 +9,26 @@ SNR = 5  # signal-to-noise ratio
 REP_FACTOR = 0  # number of augmented samples per original sample
 WINDOW_SIZE = 32  # 640 frames per sample
 NUM_FRAMES = 8064 // 4
-SEG_LENGTH = 64        # We expect 64 frames per 2-second segment after averaging
-DESIRED_FRAMES = 32    # We want each output clip to have 32 frames
+SEG_LENGTH = 64        
+DESIRED_FRAMES = 32    
 STRIDE = 2
+
+# change the channel order to match traversal from Hilbert curve
+deap_order = [
+    'Fp1','AF3','F3','F7','FC5','FC1','C3','T7',
+    'CP5','CP1','P3','P7','PO3','O1','Oz','Pz',
+    'Fp2','AF4','Fz','F4','F8','FC6','FC2','Cz',
+    'C4','T8','CP6','CP2','P4','P8','PO4','O2'
+]
+
+hilbert_order = [
+    'O2','Oz','PO4','CP2','P4','CP6','P8','T8',
+    'F8','Fp2','AF4','F4','FC6','C4','FC2','Cz',
+    'FC1','C3','FC5','F3','AF3','Fz','Fp1','F7',
+    'T7','P7','CP5','P3','CP1','Pz','PO3','O1'
+]
+
+channel_order = [deap_order.index(ch) for ch in hilbert_order]
 
 # helper method for adding Gaussian noise
 def add_gaussian_noise(signal, snr_db=5):
@@ -30,6 +47,7 @@ for subject in range(32):
     data = x['data']
     labels = x['labels']
     relevant_channels = data[:, :32, :]
+    relevant_channels = relevant_channels[:, channel_order, :] 
     relevant_labels = labels[:, :2]
     classes = []
 
@@ -48,9 +66,9 @@ for subject in range(32):
     subject_labels = []  # list for this subject's labels
 
     # CWT parameters
-    fs = 128 
-    f0 = 4
-    f1 = 45
+    fs = 128 # signal hz
+    f0 = 4   # lowest frequency
+    f1 = 45  # highest frequency
     fn = 32  # number of frequencies
 
     for trial in range(40):
