@@ -10,51 +10,71 @@ import torchvision.transforms.v2 as transforms
 import csv
 import wandb
 import os
+import re
+import copy
 import argparse
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-parser = argparse.ArgumentParser(description="Run K-Fold CV for ViViT fine-tuning on either DEAP or Private dataset, with a specified number of unfrozen transformer layers.")
-parser.add_argument(
-    "--config",
-    type=str,
-    required=True,
-    help="Config string: 'D' for DEAP or 'P' for Private, followed by the number of unfrozen layers from 0-2 (e.g., D0, P2, D1, etc.)."
-)
-args = parser.parse_args()
-config_str = args.config
-
-if config_str[0] == 'D':
-    DATASET = "data/all_deap_cwt_data.npz"
-elif config_str[0] == 'P':
-    DATASET = "data/all_private_cwt_data.npz"
-else:
-    raise ValueError("invalid dataset code.")
+# initalize constants
 BATCH_SIZE = 32
-NUM_WORKERS = 16
+NUM_WORKERS = 32
 NUM_EPOCHS = 20
 LEARNING_RATE = 3e-5 # 3e-5 performs best
 WEIGHT_DECAY = 0.01
 NOISE_PROB = 0.0
 TRAIN_PROB = 0.8
-MODEL_NAME = "google/vivit-b-16x2-kinetics400"
+MODEL_NAME_HF = "google/vivit-b-16x2-kinetics400"
 NUM_CLASSES = 3
-NUM_UNFROZEN_LAYERS = int(config_str[1]) # number of transformer layers that get unfrozen for training alongside mlp head
-                        # 2 performs best
 
-FINETUNING_TYPE = config_str # type of finetuning:
-                             # D - DEAP dataset
-                             # P - Private dataset
-                             # number following D/P - number of unfrozen transformer layers
-                             # D#P# - previous finetuned model on DEAP finetuned again on private dataset
-                                # TODO: add support for re-finetuning on private data
-                                            
-base_metrics_dir = f"metrics/{FINETUNING_TYPE}"
-base_models_dir = f"models/{FINETUNING_TYPE}"
+# get config arguments from flags
+parser = argparse.ArgumentParser(
+    description="Run ViViT fine‑tuning; single‑phase (D0/P2) or two‑phase (D0P1/P2D0)."
+)
+parser.add_argument(
+    "--config", type=str, required=True,
+    help="Config: 'D#' or 'P#' or chained 'D#P#'/'P#D#' (where # in [0,1,2])."
+)
+args = parser.parse_args()
+config = args.config.upper()
+
+# check finetuning scenario
+m = re.fullmatch(r"([DP])([0-2])(?:([DP])([0-2]))?", config)
+if not m:
+    raise ValueError("`--config` must be D# or P# or D#P# or P#D#, with #∈{0,1,2}")
+phase1_ds, phase1_freeze, phase2_ds, phase2_freeze = m.groups()
+phase1_freeze = int(phase1_freeze)
+phase2_freeze = int(phase2_freeze) if phase2_ds else None
+
+if phase2_ds:
+    # further training with model previously finetuned on DEAP dataset
+    phase1_tag = f"{phase1_ds}{phase1_freeze}"
+    checkpoint = f"models/{phase1_tag}"
+    print(f"loading pretrained checkpoint from phase1: {checkpoint}")
+    base_model = VivitForVideoClassification.from_pretrained(checkpoint)
+    DATASET = ("data/all_deap_cwt_data.npz" if phase2_ds == "D" else "data/all_private_cwt_data.npz")
+    num_unfrozen = phase2_freeze
+else:
+    # finetuning vanilla hugging face model on private data directly
+    print(f"loading base ViViT from hugging face: {MODEL_NAME_HF}")
+    base_model = VivitForVideoClassification.from_pretrained(MODEL_NAME_HF)
+    DATASET = ("data/all_deap_cwt_data.npz" if phase1_ds == "D" else "data/all_private_cwt_data.npz")
+    num_unfrozen = phase1_freeze
+    
+# load model and freeze backbone to only train mlp head
+for p in base_model.vivit.parameters():
+    p.requires_grad = False
+# unfreeze given number of transformer layers from flag    
+for i in range(num_unfrozen):
+    for p in base_model.vivit.encoder.layer[-1 - i].parameters():
+        p.requires_grad = True
+
+out_tag = config
+base_models_dir = f"models/{out_tag}"
+base_metrics_dir = f"metrics/{out_tag}"
 csv_results_path = f"{base_metrics_dir}/cv_results.csv"
-
-os.makedirs(base_metrics_dir, exist_ok=True)
 os.makedirs(base_models_dir, exist_ok=True)
+os.makedirs(base_metrics_dir, exist_ok=True)
 
 def compute_metrics(eval_pred):
     logits, labels = eval_pred
@@ -77,7 +97,7 @@ class WeightedTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.get("labels")
         outputs = model(**inputs)
         logits = outputs.logits
@@ -85,7 +105,7 @@ class WeightedTrainer(Trainer):
         loss = loss_fct(logits, labels)
         return (loss, outputs) if return_outputs else loss
 
-image_processor = VivitImageProcessor.from_pretrained(MODEL_NAME)
+image_processor = VivitImageProcessor.from_pretrained(MODEL_NAME_HF)
 image_size = (224, 224)
 image_mean = image_processor.image_mean
 image_std = image_processor.image_std
@@ -131,11 +151,11 @@ with open(csv_results_path, "w", newline='') as csvfile:
     for train_idx, test_idx in skf.split(all_samples, all_labels):
         wandb.init(
             project="emotion-recognition",
-            name=f"{FINETUNING_TYPE}_fold-{fold}",
+            name=f"{out_tag}_fold-{fold}",
             config={
                 "fold": fold,
-                "model_name": MODEL_NAME,
-                "num_unfrozen_layers": NUM_UNFROZEN_LAYERS,
+                "model_name": MODEL_NAME_HF,
+                "num_unfrozen_layers": num_unfrozen,
                 "learning_rate": LEARNING_RATE,
                 "batch_size": BATCH_SIZE,
                 "num_epochs": NUM_EPOCHS,
@@ -144,7 +164,6 @@ with open(csv_results_path, "w", newline='') as csvfile:
             reinit=True
         )
         
-        fold += 1
         train_samples, train_labels = all_samples[train_idx], all_labels[train_idx]
         test_samples, test_labels = all_samples[test_idx], all_labels[test_idx]
         train_dataset = CWTDataset(train_samples, train_labels, preprocess_transform)
@@ -154,16 +173,8 @@ with open(csv_results_path, "w", newline='') as csvfile:
         class_weights = torch.tensor(class_weights, dtype=torch.float32)
         print(f"fold {fold} class weights: {class_weights}")
 
-        # load model and freeze backbone to only train mlp head
-        model = VivitForVideoClassification.from_pretrained(MODEL_NAME)
-        for param in model.vivit.parameters():
-            param.requires_grad = False
-        # unfreeze given number of transformer layers if desired
-        encoder_layers = model.vivit.encoder.layer
-        for i in range(NUM_UNFROZEN_LAYERS):
-            for param in encoder_layers[11-i].parameters():
-                param.requires_grad = True
         # adjust classifier head for 3 classes
+        model = copy.deepcopy(base_model)
         num_features = model.classifier.in_features 
         model.classifier = torch.nn.Linear(num_features, 3) 
         model.config.num_labels = 3
@@ -175,7 +186,6 @@ with open(csv_results_path, "w", newline='') as csvfile:
             eval_strategy="epoch",
             per_device_train_batch_size=BATCH_SIZE,
             per_device_eval_batch_size=BATCH_SIZE,
-            #per_gpu_eval_batch_size=BATCH_SIZE,
             learning_rate=LEARNING_RATE,
             weight_decay=WEIGHT_DECAY,
             num_train_epochs=NUM_EPOCHS,
@@ -199,6 +209,7 @@ with open(csv_results_path, "w", newline='') as csvfile:
             compute_metrics=compute_metrics,
             callbacks=[EarlyStoppingCallback(early_stopping_patience=5)]
         )
+        
         trainer.train()
         
         final_model_path = f"{base_models_dir}/best_fold_{fold}"
@@ -221,7 +232,8 @@ with open(csv_results_path, "w", newline='') as csvfile:
         all_fold_aucs.append(auc)
         all_fold_f1s.append(f1)
         row_data = [fold, f"{loss:.6f}", f"{acc:.6f}", f"{rec:.6f}", f"{pre:.6f}", f"{auc:.6f}", f"{f1:.6f}"]
-        # TODO: save metrics to .txt file in fold_dir as well
+        with open(f"{fold_dir}/metrics.txt","w") as ft:
+            ft.write(f"loss={loss:.6f}\nacc={acc:.4f}\nrecall={rec:.4f}\nprec={pre:.4f}\nauc={auc:.4f}\nf1={f1:.4f}\n")
         writer.writerow(row_data)
         
         # get final confusion matrix
@@ -238,6 +250,7 @@ with open(csv_results_path, "w", newline='') as csvfile:
         plt.savefig(f"{fold_dir}/fold-{fold}_confusion_matix.png")
         plt.close()
         wandb.finish()
+        fold += 1
     
 mean_accuracy = np.mean(all_fold_accuracies)
 std_accuracy = np.std(all_fold_accuracies)
