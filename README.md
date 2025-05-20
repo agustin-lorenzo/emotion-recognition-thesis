@@ -59,10 +59,12 @@ Code for this process is provided in `hilbert_curve.ipynb`
 ### Model and training
 The model used is Google’s base Video Vision Transformer (ViViT) model with 89,236,992 parameters pretrained on the Kinetics 400 dataset. The model’s classifier head was adjusted to account for 3 classes, and the transformer layers were initially frozen before training. All instances were transformed to match the expected input of the ViViT by resizing to (224, 224) without antialiasing, repeating each frame twice to match 3-channel RGB format, and normalizing by the base model’s image processor mean and standard deviation. To match the expected input of 32 frames, CWT values were averaged and different strides were used to select frames from instances with varying lengths.
 
-There were three separate training cases in which the model was trained with 1, 2, or none of the final transformer layers unfrozen. Baseline models were also trained by finetuning the ViViT on the private dataset directly without finetuning on DEAP first. 5-fold cross validation was used to obtain averages for classification metrics including accuracy, precision, recall, ROC AUC, and F1 score.
+<img src="figures/vivit.png" alt="vivit" width="500"/>
+
+There were three separate training cases in which the model was trained with 1, 2, or none of the final transformer layers unfrozen. Baseline models were also trained by finetuning the ViViT on the private dataset directly without finetuning on DEAP first. 5-fold cross validation was used to obtain averages for classification metrics including accuracy, precision, recall, ROC AUC, and F1 score. The cross-validation process is done by running `run_k_folds.py`.
 
 ## Results
-Training is currently in progress. Once training is complete, results will be provided here. 
+Training is currently in progress. Once training is complete, results will be provided here. Raw data will also be provided in a `metrics` folder. 
 
 ## Plans
 This is still a work in progress. There are a number of things that I am still currently working on. A (non-comprehensive) to-do list is below:
