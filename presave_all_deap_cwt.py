@@ -7,11 +7,9 @@ from old_scripts.run_k_folds import add_gaussian_noise
 # initialize constants
 SNR = 5  # signal-to-noise ratio
 REP_FACTOR = 0  # number of augmented samples per original sample
-WINDOW_SIZE = 32  # 640 frames per sample
-NUM_FRAMES = 8064 // 4
-SEG_LENGTH = 64        
-DESIRED_FRAMES = 32    
-STRIDE = 2
+NUM_FRAMES = 7680 // 4 # number of total frames after averaging (by factor of 4, i.e. // 4), 
+SEG_LENGTH = 320 # = num seconds * 32 frames 
+STRIDE = 10 # should be equal to num seconds
 
 # change the channel order to match traversal from Hilbert curve
 deap_order = [
@@ -72,9 +70,10 @@ for subject in range(32):
     fn = 32  # number of frequencies
 
     for trial in range(40):
-        total_cwt = np.zeros((32 * fn, 8064))
+        total_cwt = np.zeros((32 * fn, 7680))
         for channel in range(32): # TODO: reorder channels by order obtained by Hilbert curve
             signal = relevant_channels[trial][channel]
+            signal = signal[3*128:] # drop 3s baseline at front of trial
             _, current_cwt = fcwt.cwt(signal, fs, f0, f1, fn)
             start = channel * fn
             end = (channel + 1) * fn
@@ -98,7 +97,9 @@ for subject in range(32):
             if i + SEG_LENGTH > NUM_FRAMES:
                 break
             segment = all_frames[i:i+SEG_LENGTH]
-            clip = segment[::STRIDE]              
+            clip = segment[::STRIDE]
+            if (len(clip) != 32):
+                print("WARNING: clip don't contain 32 frames!\n\tlen(clip) = ", len(clip))
             subject_trials.append(np.array(clip, dtype=np.float32))
             subject_labels.append(int(classes[trial]))
             
@@ -113,7 +114,7 @@ for subject in range(32):
     
     all_samples.extend(subject_trials)    
     all_labels.extend(subject_labels)
-    print(f"Processed subject {subject+1}: total samples so far = {len(all_samples)}", end='\r')
+    print(f"Processed subject {subject+1}: total samples so far = {len(all_samples)}\t\tCurrent dataset shape: trials = {np.shape(all_samples)}, labels = {np.shape(all_labels)}", end='\r')
     
 np.savez("all_deap_cwt_data.npz", samples=np.array(all_samples, dtype=np.float32), labels=np.array(all_labels, dtype=np.uint8))
 print("\nData saved to all_deap_cwt_data.npz")

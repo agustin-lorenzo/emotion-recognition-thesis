@@ -33,7 +33,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     "--config", type=str, required=True,
-    help="Config: 'D#' or 'P#' or chained 'D#P#'/'P#D#' (where # in [0,1,2])."
+    help="Config: 'D' for DEAP or 'P' for Private, followed by the number of unfrozen layers from 0-2 (e.g., D0, P2, D1, etc.).\n        A 'chained' flag (D#P#) can be used to start the second finetuning phase with a previously trained model"
 )
 args = parser.parse_args()
 config = args.config.upper()
@@ -41,7 +41,7 @@ config = args.config.upper()
 # check finetuning scenario
 m = re.fullmatch(r"([DP])([0-2])(?:([DP])([0-2]))?", config)
 if not m:
-    raise ValueError("`--config` must be D# or P# or D#P# or P#D#, with #∈{0,1,2}")
+    raise ValueError("`--config` must be D# or P# or D#P# or P#D#, with # equal to 0, 1, or 2")
 phase1_ds, phase1_freeze, phase2_ds, phase2_freeze = m.groups()
 phase1_freeze = int(phase1_freeze)
 phase2_freeze = int(phase2_freeze) if phase2_ds else None
@@ -60,11 +60,16 @@ else:
     base_model = VivitForVideoClassification.from_pretrained(MODEL_NAME_HF)
     DATASET = ("data/all_deap_cwt_data.npz" if phase1_ds == "D" else "data/all_private_cwt_data.npz")
     num_unfrozen = phase1_freeze
+    num_features = base_model.classifier.in_features
+    base_model.classifier = torch.nn.Linear(num_features, NUM_CLASSES)
+    base_model.config.num_labels = NUM_CLASSES
+    base_model.num_labels = NUM_CLASSES
     
 # load model and freeze backbone to only train mlp head
 for p in base_model.vivit.parameters():
     p.requires_grad = False
-# unfreeze given number of transformer layers from flag    
+# unfreeze given number of transformer layers from flag
+print(f"unfreezing {num_unfrozen} transformer layers...")
 for i in range(num_unfrozen):
     for p in base_model.vivit.encoder.layer[-1 - i].parameters():
         p.requires_grad = True
@@ -141,6 +146,7 @@ all_fold_recalls = []
 all_fold_precisions = []
 all_fold_aucs = []
 all_fold_f1s = []
+overall_cm = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
 with open(csv_results_path, "w", newline='') as csvfile:
     writer = csv.writer(csvfile)
     header = ["fold", "loss", "accuracy", "recall", "precision", "roc_auc", "f1"]
@@ -173,13 +179,8 @@ with open(csv_results_path, "w", newline='') as csvfile:
         class_weights = torch.tensor(class_weights, dtype=torch.float32)
         print(f"fold {fold} class weights: {class_weights}")
 
-        # adjust classifier head for 3 classes
+        # make a copy of the base model for the fold
         model = copy.deepcopy(base_model)
-        num_features = model.classifier.in_features 
-        model.classifier = torch.nn.Linear(num_features, 3) 
-        model.config.num_labels = 3
-        model.num_labels = 3
-        model.to(device)
 
         training_args = TrainingArguments(
             output_dir=f"{base_models_dir}/fold_{fold}",
@@ -236,14 +237,14 @@ with open(csv_results_path, "w", newline='') as csvfile:
             ft.write(f"loss={loss:.6f}\nacc={acc:.4f}\nrecall={rec:.4f}\nprec={pre:.4f}\nauc={auc:.4f}\nf1={f1:.4f}\n")
         writer.writerow(row_data)
         
-        # get final confusion matrix
+        # get confusion matrix for fold
         predictions_output = trainer.predict(eval_dataset)
         y_pred = predictions_output.predictions.argmax(axis=-1)
         y_true = predictions_output.label_ids
         class_names = ['Unpleasant', 'Neutral', 'Pleasant']
         cm = confusion_matrix(y_true, y_pred)
+        overall_cm += cm
         print("\nFinal Confusion Matrix:\n", cm)
-        
         
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
         disp.plot()
@@ -262,21 +263,30 @@ mean_precision = np.mean(all_fold_precisions)
 std_precision = np.std(all_fold_precisions)
 mean_auc = np.mean(all_fold_aucs)
 std_auc = np.std(all_fold_aucs)
+np.savetxt(f"{base_metrics_dir}/overall_confusion_matrix.csv", overall_cm, fmt="%d", delimiter=",")
 
-# TODO: save these final metrics to base_metrics_dir as well
-print("\n--- Cross-Validation Summary ---")
-print(f"Folds: {skf.get_n_splits()}")
-print(f"Average Accuracy:  {mean_accuracy:.4f} +/- {std_accuracy:.4f}")
-print(f"Average F1-Score:  {mean_f1:.4f} +/- {std_f1:.4f}")
-print(f"Average Recall:    {mean_recall:.4f} +/- {std_recall:.4f}")
-print(f"Average Precision: {mean_precision:.4f} +/- {std_precision:.4f}")
-print(f"Average ROC AUC:   {mean_auc:.4f} +/- {std_auc:.4f}")
-print("\nIndividual Fold Accuracies:", [f"{acc:.4f}" for acc in all_fold_accuracies])
-print("---------------------------------")
+with open(f"{base_metrics_dir}/averages.txt", "w") as f:
+    f.write("--- Cross-Validation Summary ---\n")
+    f.write(f"Folds: {skf.get_n_splits()}\n")
+    f.write(f"Average Accuracy:  {mean_accuracy:.4f} +/- {std_accuracy:.4f}\n")
+    f.write(f"Average F1-Score:  {mean_f1:.4f} +/- {std_f1:.4f}\n")
+    f.write(f"Average Recall:    {mean_recall:.4f} +/- {std_recall:.4f}\n")
+    f.write(f"Average Precision: {mean_precision:.4f} +/- {std_precision:.4f}\n")
+    f.write(f"Average ROC AUC:   {mean_auc:.4f} +/- {std_auc:.4f}\n\n")
+    f.write("Individual Fold Accuracies: " + ", ".join(f"{x:.4f}" for x in all_fold_accuracies) + "\n\n")
+    f.write("Raw Lists:\n")
+    f.write(f"\taccuracies: {all_fold_accuracies}\n")
+    f.write(f"\tprecisions: {all_fold_precisions}\n")
+    f.write(f"\trecalls: {all_fold_recalls}\n")
+    f.write(f"\troc aucs: {all_fold_aucs}\n")
+    f.write(f"\tf1s: {all_fold_f1s}\n")
 
-print("\n\nRaw Lists:\n")
-print("\taccuracies: ", all_fold_accuracies)
-print("\tprecisions: ", all_fold_precisions)
-print("\trecalls: ", all_fold_recalls)
-print("\troc aucs: ", all_fold_aucs)
-print("\tf1s: ", all_fold_f1s)
+class_names = ['Unpleasant', 'Neutral', 'Pleasant']
+disp = ConfusionMatrixDisplay(confusion_matrix=overall_cm, display_labels=class_names)
+disp.plot(cmap='viridis', values_format='d', colorbar=False)
+plt.xlabel('Predicted class')
+plt.ylabel('True class')
+plt.title(out_tag)
+plt.tight_layout()
+plt.savefig(f"{base_metrics_dir}/overall_confusion_matrix.svg", format="svg")
+plt.close()

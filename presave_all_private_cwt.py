@@ -7,11 +7,10 @@ from old_scripts.run_k_folds import add_gaussian_noise
 # initialize constants
 SNR = 5  # signal-to-noise ratio
 REP_FACTOR = 0  # number of augmented samples per original sample
-WINDOW_SIZE = 32  # 640 frames per sample
 NUM_FRAMES = 8064 // 4
 SEG_LENGTH = 64        
-DESIRED_FRAMES = 32    
-STRIDE = 2
+PIC_STRIDE = 2
+VID_STRIDE = 10
 
 # get private dataset's original channel order from first sample in preprocessed picture csv
 df_pic = pd.read_csv("data/preprocessed_picture.csv")
@@ -66,7 +65,7 @@ def normalize_sample(all_frames):
     return sample
 
 # helper function for getting sample video from 128 channel .csv rows for one trial
-def get_sample(trial_rows, seconds=2, augmentation=False, normalize=False):
+def get_sample(trial_rows, stride, seconds=2, augmentation=False, normalize=False):
     trial_rows = trial_rows.iloc[channel_order]
     time_points = 128 * seconds
     total_cwt = np.zeros((128 * fn, time_points)) # image containing cwt values for all channels, change width depending on video/picture data
@@ -96,7 +95,7 @@ def get_sample(trial_rows, seconds=2, augmentation=False, normalize=False):
             frame[:, channel] = total_cwt[start:end, t]
         all_frames.append(frame) # append 1-channel frame, no rgb
     # use a stride of 2 to reduce frames down to 32, expected by vivit
-    clip = all_frames[::2]
+    clip = all_frames[::stride]
     # normalize and return sample
     if normalize: 
         return normalize_sample(clip)
@@ -118,8 +117,9 @@ for participant in df['par_id'].unique():
     for stimulus in participant_rows['Stim_name'].unique():
         trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
         cls = np.uint8(trial_rows.iloc[0]["class"])
-        all_samples.append(get_sample(trial_rows))
+        all_samples.append(get_sample(trial_rows, 2))
         all_labels.append(cls)
+        print(f"Current dataset shape (with pic data): {np.shape(all_samples)}", end='\r')
 print("picture data processed.")
 
 # processing video dataset for 2s clips
@@ -134,14 +134,17 @@ for participant in df['par_id'].unique():
     for stimulus in participant_rows['Stim_name'].unique():
         trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
         cls = np.uint8(trial_rows.iloc[0]["class"])
-        sample = get_sample(trial_rows, seconds=10)
-        clip_length = 32 # expected by vivit
-        for i in range(5):
-            start_idx = i * clip_length
-            end_idx = (i + 1) * clip_length
-            clip = sample[start_idx:end_idx]
-            all_samples.append(clip)
-            all_labels.append(cls)
+        sample = get_sample(trial_rows, 10, seconds=10)
+        all_samples.append(sample)
+        all_labels.append(cls)
+        print(f"\nCurrent dataset shape (with vid data): {np.shape(all_samples)}", end='\r')
+        # clip_length = 32 # expected by vivit
+        # for i in range(5):
+        #     start_idx = i * clip_length
+        #     end_idx = (i + 1) * clip_length
+        #     clip = sample[start_idx:end_idx]
+        #     all_samples.append(clip)
+        #     all_labels.append(cls)
 print("video dataset processed.")
 
 np.savez("all_private_cwt_data.npz", samples=np.array(all_samples, dtype=np.float32), labels=np.array(all_labels, dtype=np.uint8))

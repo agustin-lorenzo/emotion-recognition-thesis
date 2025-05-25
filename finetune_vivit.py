@@ -1,3 +1,10 @@
+"""
+finetune_vivit.py
+Author: Agustin Lorenzo
+
+This is a script used for training a model (i.e. Google's ViViT) on an entire dataset without train/test splits or k-fold cross validation.
+For my thesis, this is used for the first phase of finetuning on the public DEAP dataset (D0, D1, D2).
+"""
 import numpy as np
 import torch
 from torch.utils.data import Dataset
