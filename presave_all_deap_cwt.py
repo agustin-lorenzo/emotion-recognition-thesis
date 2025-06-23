@@ -8,8 +8,8 @@ from old_scripts.run_k_folds import add_gaussian_noise
 SNR = 5  # signal-to-noise ratio
 REP_FACTOR = 0  # number of augmented samples per original sample
 NUM_FRAMES = 7680 // 4 # number of total frames after averaging (by factor of 4, i.e. // 4), 
-SEG_LENGTH = 320 # = num seconds * 32 frames 
-STRIDE = 10 # should be equal to num seconds
+SEG_LENGTH = 64 # = num seconds * 32 frames 
+STRIDE = 2 # should be equal to num seconds
 
 # change the channel order to match traversal from Hilbert curve
 deap_order = [

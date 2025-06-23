@@ -62,7 +62,7 @@ os.makedirs(base_models_dir, exist_ok=True)
 
 wandb.init(
     project="emotion-recognition",
-    name=f"{FINETUNING_TYPE}",
+    name=f"{FINETUNING_TYPE}-stride2",
     config={
         "model_name": MODEL_NAME,
         "num_unfrozen_layers": NUM_UNFROZEN_LAYERS,

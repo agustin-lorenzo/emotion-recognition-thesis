@@ -10,7 +10,7 @@ REP_FACTOR = 0  # number of augmented samples per original sample
 NUM_FRAMES = 8064 // 4
 SEG_LENGTH = 64        
 PIC_STRIDE = 2
-VID_STRIDE = 10
+VID_STRIDE = 2
 
 # get private dataset's original channel order from first sample in preprocessed picture csv
 df_pic = pd.read_csv("data/preprocessed_picture.csv")
@@ -28,8 +28,8 @@ print("hilbert order length: ", len(hilbert_order))
 private_set = set(private_order)
 hilbert_set = set(hilbert_order)
 
-missing_from_hilbert = private_set   - hilbert_set
-extra_in_hilbert   = hilbert_set     - private_set
+missing_from_hilbert = private_set - hilbert_set
+extra_in_hilbert = hilbert_set - private_set
 
 print(f"Channels in data but not in your Hilbert list ({len(missing_from_hilbert)}):")
 for ch in sorted(missing_from_hilbert):
@@ -117,7 +117,7 @@ for participant in df['par_id'].unique():
     for stimulus in participant_rows['Stim_name'].unique():
         trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
         cls = np.uint8(trial_rows.iloc[0]["class"])
-        all_samples.append(get_sample(trial_rows, 2))
+        all_samples.append(get_sample(trial_rows, PIC_STRIDE))
         all_labels.append(cls)
         print(f"Current dataset shape (with pic data): {np.shape(all_samples)}", end='\r')
 print("picture data processed.")
@@ -125,7 +125,7 @@ print("picture data processed.")
 # processing video dataset for 2s clips
 print("\nopening video dataset...")
 df = pd.read_csv('data/preprocessed_video.csv')
-print("video dataset opened.")
+print("video dataset opened.\n")
 
 for participant in df['par_id'].unique():
     participant_rows = df[df['par_id'] == participant]
@@ -134,17 +134,17 @@ for participant in df['par_id'].unique():
     for stimulus in participant_rows['Stim_name'].unique():
         trial_rows = participant_rows[participant_rows['Stim_name'] == stimulus]
         cls = np.uint8(trial_rows.iloc[0]["class"])
-        sample = get_sample(trial_rows, 10, seconds=10)
-        all_samples.append(sample)
-        all_labels.append(cls)
-        print(f"\nCurrent dataset shape (with vid data): {np.shape(all_samples)}", end='\r')
-        # clip_length = 32 # expected by vivit
-        # for i in range(5):
-        #     start_idx = i * clip_length
-        #     end_idx = (i + 1) * clip_length
-        #     clip = sample[start_idx:end_idx]
-        #     all_samples.append(clip)
-        #     all_labels.append(cls)
+        sample = get_sample(trial_rows, VID_STRIDE, seconds=10)
+        #all_samples.append(sample)
+        #all_labels.append(cls)
+        print(f"Current dataset shape (with vid data): {np.shape(all_samples)}", end='\r')
+        clip_length = 32 # expected by vivit
+        for i in range(5):
+            start_idx = i * clip_length
+            end_idx = (i + 1) * clip_length
+            clip = sample[start_idx:end_idx]
+            all_samples.append(clip)
+            all_labels.append(cls)
 print("video dataset processed.")
 
 np.savez("all_private_cwt_data.npz", samples=np.array(all_samples, dtype=np.float32), labels=np.array(all_labels, dtype=np.uint8))

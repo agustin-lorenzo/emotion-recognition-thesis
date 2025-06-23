@@ -157,7 +157,7 @@ with open(csv_results_path, "w", newline='') as csvfile:
     for train_idx, test_idx in skf.split(all_samples, all_labels):
         wandb.init(
             project="emotion-recognition",
-            name=f"{out_tag}_fold-{fold}",
+            name=f"{out_tag}-stride2_fold-{fold}",
             config={
                 "fold": fold,
                 "model_name": MODEL_NAME_HF,
